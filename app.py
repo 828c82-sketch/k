@@ -1,333 +1,129 @@
-
-import os
-import json
-import requests
-import re
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
+import json
+import os
+import re
+import time
+import urllib.request
+import urllib.parse
+import ssl
+import traceback
 
 app = Flask(__name__)
 CORS(app)
 
-# ===== 환경변수 (서버 전용 키) =====
-NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID", "")
-NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "")
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
-JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
+# ──────────────────────────────────────────────
+# 0. 전역 HTML 소스 (프론트엔드에서 업데이트)
+# ──────────────────────────────────────────────
+global_html_source = ""
 
-# ===== 현재 서버 소스코드 =====
-SERVER_SOURCE_PATH = os.path.abspath(__file__)
+# ──────────────────────────────────────────────
+# 1. 슬롯 시스템 (파이썬 서버 메모리 + 파일 저장)
+# ──────────────────────────────────────────────
+SLOTS_FILE = "slots.json"
 
-# ===== [도구 1] 파이썬 백엔드 소스 읽기 =====
-def read_python_source(start_line: int = None, end_line: int = None):
+def load_slots():
     try:
-        with open(SERVER_SOURCE_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        
-        total_lines = len(lines)
-        
-        if start_line is not None or end_line is not None:
-            s = (start_line or 1) - 1
-            e = end_line or total_lines
-            s = max(0, s)
-            e = min(total_lines, e)
-            selected = lines[s:e]
-            source = "".join(selected)
-            return json.dumps({
-                "filename": SERVER_SOURCE_PATH,
-                "total_lines": total_lines,
-                "start_line": s + 1,
-                "end_line": e,
-                "content": source
-            }, ensure_ascii=False)
-        else:
-            source = "".join(lines)
-            return json.dumps({
-                "filename": SERVER_SOURCE_PATH,
-                "total_lines": total_lines,
-                "start_line": 1,
-                "end_line": total_lines,
-                "content": source
-            }, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": f"파일 읽기 실패: {str(e)}"})
-
-# ===== [도구 2] 프론트엔드 HTML/JS 소스 읽기 (수정: 200줄 제한 제거) =====
-def read_source_code(html_source: str = "", target_url: str = "", 
-                     start_line: int = None, end_line: int = None,
-                     keyword: str = "", lines_before: int = 3, lines_after: int = 3):
-    """
-    프론트엔드 HTML/JS 소스 또는 외부 URL을 읽어옵니다.
-    end_line 미지정 시 전체를 읽고, start_line/end_line 지정 시 해당 범위만 읽습니다.
-    """
-    result = {"source": "", "type": "", "info": {}}
-    
-    # 1. URL 우선 처리
-    if target_url:
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            }
-            resp = requests.get(target_url, headers=headers, timeout=30)
-            text = resp.text
-            lines = text.split("\n")
-            total = len(lines)
-            result["type"] = "url"
-            result["info"] = {"url": target_url, "total_lines": total}
-            
-            # 키워드 검색
-            if keyword:
-                match_indices = []
-                lower_keyword = keyword.lower()
-                for i, line in enumerate(lines):
-                    if lower_keyword in line.lower():
-                        match_indices.append(i)
-                
-                if match_indices:
-                    extracted = []
-                    for idx in match_indices:
-                        s = max(0, idx - lines_before)
-                        e = min(total, idx + lines_after + 1)
-                        extracted.append(f"--- 라인 {s+1}-{e} (매칭 라인 {idx+1}) ---")
-                        extracted.extend(lines[s:e])
-                    result["source"] = "\n".join(extracted)
-                    result["info"]["matches"] = len(match_indices)
-                else:
-                    # 범위가 지정되면 해당 범위만, 없으면 전체
-                    s = (start_line or 1) - 1
-                    e = end_line or total  # 수정: min(total, 200) -> total
-                    s = max(0, s)
-                    e = min(total, e)
-                    result["source"] = "\n".join(lines[s:e])
-                    result["info"]["range"] = f"{s+1}-{e}"
-            else:
-                s = (start_line or 1) - 1
-                e = end_line or total  # 수정: min(total, 200) -> total
-                s = max(0, s)
-                e = min(total, e)
-                result["source"] = "\n".join(lines[s:e])
-                result["info"]["range"] = f"{s+1}-{e}"
-                
-        except Exception as e:
-            result["source"] = f"URL 읽기 실패: {str(e)}"
-            result["type"] = "error"
-    
-    # 2. HTML 소스 직접 처리
-    elif html_source:
-        lines = html_source.split("\n")
-        total = len(lines)
-        result["type"] = "html_source"
-        result["info"] = {"total_lines": total}
-        
-        if keyword:
-            match_indices = []
-            lower_keyword = keyword.lower()
-            for i, line in enumerate(lines):
-                if lower_keyword in line.lower():
-                    match_indices.append(i)
-            
-            if match_indices:
-                extracted = []
-                for idx in match_indices:
-                    s = max(0, idx - lines_before)
-                    e = min(total, idx + lines_after + 1)
-                    extracted.append(f"--- 라인 {s+1}-{e} (매칭 라인 {idx+1}) ---")
-                    extracted.extend(lines[s:e])
-                result["source"] = "\n".join(extracted)
-                result["info"]["matches"] = len(match_indices)
-            else:
-                s = (start_line or 1) - 1
-                e = end_line or total  # 수정: min(total, 200) -> total
-                s = max(0, s)
-                e = min(total, e)
-                result["source"] = "\n".join(lines[s:e])
-                result["info"]["range"] = f"{s+1}-{e}"
-        else:
-            s = (start_line or 1) - 1
-            e = end_line or total  # 수정: min(total, 200) -> total
-            s = max(0, s)
-            e = min(total, e)
-            result["source"] = "\n".join(lines[s:e])
-            result["info"]["range"] = f"{s+1}-{e}"
-    else:
-        result["source"] = "읽을 내용이 없습니다. html_source 또는 target_url을 제공해주세요."
-        result["type"] = "empty"
-    
-    return json.dumps(result, ensure_ascii=False)
-
-# ===== 네이버 검색 =====
-def naver_search(query: str, search_type: str = "blog"):
-    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
-        return json.dumps({"error": "네이버 API 키가 설정되지 않았습니다."}, ensure_ascii=False)
-    
-    url = f"https://openapi.naver.com/v1/search/{search_type}.json"
-    headers = {
-        "X-Naver-Client-Id": NAVER_CLIENT_ID,
-        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET
+        if os.path.exists(SLOTS_FILE):
+            with open(SLOTS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except:
+        pass
+    return {
+        "송": {
+            "provider": "groq",
+            "apiKey": "",
+            "model": "llama-3.3-70b-versatile",
+            "sysPrompt": "",
+            "maxTokens": 4096
+        },
+        "땡킹": {
+            "provider": "groq",
+            "apiKey": "",
+            "model": "qwen/qwen3.6-27b",
+            "sysPrompt": "",
+            "maxTokens": 4096
+        }
     }
-    params = {"query": query, "display": 5, "sort": "sim"}
-    
-    try:
-        resp = requests.get(url, headers=headers, params=params, timeout=10)
-        data = resp.json()
-        
-        if not data.get("items"):
-            return json.dumps({"result": f"네이버 [{search_type}] 검색 결과가 없습니다."}, ensure_ascii=False)
-        
-        results = []
-        for item in data["items"]:
-            title = re.sub(r"<[^>]+>", "", item["title"])
-            desc = re.sub(r"<[^>]+>", "", item.get("description", ""))
-            link = item.get("link") or item.get("originallink", "")
-            results.append({
-                "title": title,
-                "description": desc,
-                "link": link
-            })
-        
-        return json.dumps({
-            "type": search_type,
-            "query": query,
-            "results": results
-        }, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": f"네이버 검색 실패: {str(e)}"}, ensure_ascii=False)
 
-# ===== 타빌리 검색 =====
-def tavily_search(query: str):
-    if not TAVILY_API_KEY:
-        return json.dumps({"error": "Tavily API 키가 설정되지 않았습니다."}, ensure_ascii=False)
-    
-    try:
-        resp = requests.post(
-            "https://api.tavily.com/search",
-            json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 3},
-            timeout=15
-        )
-        data = resp.json()
-        
-        if not data.get("results"):
-            return json.dumps({"result": "검색 결과가 없습니다."}, ensure_ascii=False)
-        
-        results = []
-        for item in data["results"]:
-            results.append({
-                "title": item["title"],
-                "url": item["url"],
-                "content": item["content"][:300]
-            })
-        
-        return json.dumps({"query": query, "results": results}, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": f"타빌리 검색 실패: {str(e)}"}, ensure_ascii=False)
+def save_slots(slots):
+    with open(SLOTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(slots, f, ensure_ascii=False, indent=2)
 
-# ===== Jina Reader =====
-def jina_reader(url_or_query: str):
-    if not JINA_API_KEY:
-        return json.dumps({"error": "Jina API 키가 설정되지 않았습니다."}, ensure_ascii=False)
-    
-    is_url = url_or_query.startswith(("http://", "https://"))
-    
-    try:
-        if is_url:
-            fetch_url = f"https://r.jina.ai/{url_or_query}"
-            label = "url"
-        else:
-            fetch_url = f"https://s.jina.ai/{url_or_query}"
-            label = "search"
-        
-        headers = {"Authorization": f"Bearer {JINA_API_KEY}"}
-        resp = requests.get(fetch_url, headers=headers, timeout=30)
-        text = resp.text[:7000]
-        
-        return json.dumps({
-            "type": label,
-            "input": url_or_query,
-            "content": text
-        }, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": f"Jina 작업 실패: {str(e)}"}, ensure_ascii=False)
+slots = load_slots()
+current_target = "송"
 
-# ===== 도구 정의 =====
-TOOLS = [
+# ──────────────────────────────────────────────
+# 2. 채팅 히스토리 (파이썬 서버 메모리 + 파일 저장)
+# ──────────────────────────────────────────────
+HISTORY_FILE = "chat_history.json"
+
+def load_history():
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except:
+        pass
+    return []
+
+def save_history(history):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+messages = load_history()
+
+# ──────────────────────────────────────────────
+# 3. 도구 정의
+# ──────────────────────────────────────────────
+my_tools = [
     {
         "type": "function",
         "function": {
-            "name": "read_python_source",
-            "description": "현재 서버에서 실행 중인 파이썬 백엔드 소스 파일(app.py)의 내용을 읽어옵니다. start_line, end_line으로 특정 라인 범위만 읽을 수 있습니다.",
+            "name": "get_app_diagnostics",
+            "description": "Retrieves app diagnostics. 'full' mode for entire source. 'extract' mode for precise keyword slicing. Fast, case-insensitive, finds bottom matches reliably.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "start_line": {
-                        "type": "integer",
-                        "description": "읽기 시작할 라인 번호 (1부터 시작)"
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "description": "읽을 마지막 라인 번호"
-                    }
-                }
+                    "mode": {"type": "string", "enum": ["full", "extract"], "default": "full"},
+                    "target": {"type": "string", "description": "extract 모드에서 검색할 키워드"},
+                    "lines_before": {"type": "number", "default": 3},
+                    "lines_after": {"type": "number", "default": 3},
+                    "case_sensitive": {"type": "boolean", "default": False},
+                    "occurrence": {"type": "number", "default": 0}
+                },
+                "required": []
             }
         }
     },
     {
         "type": "function",
         "function": {
-            "name": "read_source_code",
-            "description": "프론트엔드 HTML/JS 소스 또는 외부 URL의 코드를 읽어옵니다. 라인 범위 지정, 키워드 검색 등 세밀한 읽기가 가능합니다. end_line 미지정 시 전체를 읽습니다.",
+            "name": "read_html_source",
+            "description": "Reads the HTML source code of the frontend. Use this when you need to see the HTML/CSS/JS code. Supports 'full' mode for entire source and 'extract' mode for keyword-based searching.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "html_source": {
-                        "type": "string",
-                        "description": "프론트엔드에서 전달받은 HTML/JS 소스 텍스트"
-                    },
-                    "target_url": {
-                        "type": "string",
-                        "description": "읽어올 외부 URL"
-                    },
-                    "start_line": {
-                        "type": "integer",
-                        "description": "읽기 시작할 라인 번호"
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "description": "읽을 마지막 라인 번호 (미지정 시 전체)"
-                    },
-                    "keyword": {
-                        "type": "string",
-                        "description": "검색할 키워드 (주변 라인 포함 출력)"
-                    },
-                    "lines_before": {
-                        "type": "integer",
-                        "description": "키워드 앞에 포함할 라인 수 (기본: 3)"
-                    },
-                    "lines_after": {
-                        "type": "integer",
-                        "description": "키워드 뒤에 포함할 라인 수 (기본: 3)"
-                    }
-                }
+                    "mode": {"type": "string", "enum": ["full", "extract"], "default": "full"},
+                    "target": {"type": "string", "description": "extract 모드에서 검색할 키워드"},
+                    "lines_before": {"type": "number", "default": 3},
+                    "lines_after": {"type": "number", "default": 3},
+                    "case_sensitive": {"type": "boolean", "default": False},
+                    "occurrence": {"type": "number", "default": 0}
+                },
+                "required": []
             }
         }
     },
     {
         "type": "function",
         "function": {
-            "name": "naver_search",
-            "description": "네이버 API로 한국어 콘텐츠(블로그, 뉴스, 지식iN, 웹문서, 카페글)를 검색합니다. 한국어 검색에 최적화되어 있습니다.",
+            "name": "tavily_search",
+            "description": "실시간 인터넷 검색을 수행합니다. 최신 뉴스, 날씨, 검색어 등 실시간 정보가 필요할 때 사용해 주세요.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "검색 키워드"
-                    },
-                    "search_type": {
-                        "type": "string",
-                        "enum": ["blog", "news", "kin", "webkr", "cafearticle"],
-                        "description": "검색 유형 (기본: blog)"
-                    }
+                    "query": {"type": "string", "description": "검색할 키워드 또는 질문"}
                 },
                 "required": ["query"]
             }
@@ -336,15 +132,13 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "tavily_search",
-            "description": "실시간 인터넷 검색을 수행합니다. 최신 뉴스, 날씨 등 실시간 정보가 필요할 때 사용합니다.",
+            "name": "naver_search",
+            "description": "Searches Korean web content via Naver Open API. Best for Korean news, blog posts, Cafe, and Q&A (Kin).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "검색 키워드"
-                    }
+                    "query": {"type": "string", "description": "Search keyword in Korean"},
+                    "type": {"type": "string", "enum": ["blog", "news", "kin", "webkr", "cafearticle"], "description": "Type of search: 'blog' (default), 'news', 'kin', 'webkr', 'cafearticle'"}
                 },
                 "required": ["query"]
             }
@@ -354,213 +148,422 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "jina_reader",
-            "description": "Jina AI를 이용해 웹 페이지의 전체 내용을 읽거나 웹 검색을 수행합니다. URL 전달 시 페이지 전체 텍스트 추출, 검색어 전달 시 웹 검색 결과를 반환합니다.",
+            "description": "Fetches web content using Jina AI. If a URL is provided, it extracts full page text. If a search term is provided, it searches the web.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url_or_query": {
-                        "type": "string",
-                        "description": "읽을 URL (http/https 시작) 또는 검색어"
-                    }
+                    "url": {"type": "string", "description": "Target full URL (starting with http/https) to read OR search keyword to look up."}
                 },
-                "required": ["url_or_query"]
+                "required": ["url"]
             }
         }
     }
 ]
 
-# ===== OpenAI 호환 엔드포인트 =====
+# ──────────────────────────────────────────────
+# 4. 도구 실행 함수
+# ──────────────────────────────────────────────
+def execute_tool(tool_name, args_obj, html_source=None):
+    if tool_name == "get_app_diagnostics":
+        # 파이썬 서버 자신의 코드를 보여줌
+        current_source = open(__file__, "r", encoding="utf-8").read()
+        mode = args_obj.get("mode", "full") if args_obj else "full"
+        
+        if mode == "full":
+            return json.dumps({
+                "system_info": "Python Flask AI Chat Server",
+                "source_code": current_source
+            }, ensure_ascii=False)
+        
+        # extract 모드
+        target = args_obj.get("target", "") if args_obj else ""
+        lines_before = args_obj.get("lines_before", 3) if args_obj else 3
+        lines_after = args_obj.get("lines_after", 3) if args_obj else 3
+        case_sensitive = args_obj.get("case_sensitive", False) if args_obj else False
+        occurrence = args_obj.get("occurrence", 0) if args_obj else 0
+        
+        if not target:
+            return json.dumps({"error": "target 파라미터가 필요합니다."})
+        
+        source_lines = current_source.split('\n')
+        match_indices = []
+        search_key = target if case_sensitive else target.lower()
+        
+        for i, line in enumerate(source_lines):
+            check_line = line if case_sensitive else line.lower()
+            if search_key in check_line:
+                match_indices.append(i)
+        
+        if occurrence > 0 and match_indices:
+            match_indices = [match_indices[occurrence - 1]]
+        
+        extracted_blocks = []
+        for idx, line_idx in enumerate(match_indices):
+            start = max(0, line_idx - lines_before)
+            end = min(len(source_lines) - 1, line_idx + lines_after)
+            extracted_blocks.append({
+                "occurrence": idx + 1,
+                "line_number": line_idx + 1,
+                "context": '\n'.join(source_lines[start:end + 1])
+            })
+        
+        result_msg = f"🎯 키워드 '{target}' 검색 완료:\n"
+        result_msg += f"총 {len(match_indices)}개 발견 (요청: {'전체' if occurrence == 0 else str(occurrence) + '번째'}).\n"
+        for block in extracted_blocks:
+            result_msg += f"\n--- [{block['occurrence']}번째 매칭] (줄 {block['line_number']}) ---\n{block['context']}\n"
+        
+        return json.dumps({
+            "system_info": "Python Flask AI Chat Server",
+            "search_info": {"target": target, "total_matches": len(match_indices), "mode": "extract"},
+            "extracted_source": result_msg
+        }, ensure_ascii=False)
+    
+    elif tool_name == "read_html_source":
+        if not html_source:
+            return json.dumps({"error": "HTML 소스 코드가 제공되지 않았습니다. 프론트엔드에서 html_source 필드를 포함해주세요."})
+        
+        mode = args_obj.get("mode", "full") if args_obj else "full"
+        
+        if mode == "full":
+            return json.dumps({
+                "system_info": "HTML Frontend Source Code",
+                "source_code": html_source
+            }, ensure_ascii=False)
+        
+        target = args_obj.get("target", "") if args_obj else ""
+        lines_before = args_obj.get("lines_before", 3) if args_obj else 3
+        lines_after = args_obj.get("lines_after", 3) if args_obj else 3
+        case_sensitive = args_obj.get("case_sensitive", False) if args_obj else False
+        occurrence = args_obj.get("occurrence", 0) if args_obj else 0
+        
+        if not target:
+            return json.dumps({"error": "target 파라미터가 필요합니다."})
+        
+        source_lines = html_source.split('\n')
+        match_indices = []
+        search_key = target if case_sensitive else target.lower()
+        
+        for i, line in enumerate(source_lines):
+            check_line = line if case_sensitive else line.lower()
+            if search_key in check_line:
+                match_indices.append(i)
+        
+        if occurrence > 0 and match_indices:
+            match_indices = [match_indices[occurrence - 1]]
+        
+        extracted_blocks = []
+        for idx, line_idx in enumerate(match_indices):
+            start = max(0, line_idx - lines_before)
+            end = min(len(source_lines) - 1, line_idx + lines_after)
+            extracted_blocks.append({
+                "occurrence": idx + 1,
+                "line_number": line_idx + 1,
+                "context": '\n'.join(source_lines[start:end + 1])
+            })
+        
+        result_msg = f"🎯 키워드 '{target}' 검색 완료:\n"
+        result_msg += f"총 {len(match_indices)}개 발견 (요청: {'전체' if occurrence == 0 else str(occurrence) + '번째'}).\n"
+        for block in extracted_blocks:
+            result_msg += f"\n--- [{block['occurrence']}번째 매칭] (줄 {block['line_number']}) ---\n{block['context']}\n"
+        
+        return json.dumps({
+            "system_info": "HTML Frontend Source Code",
+            "search_info": {"target": target, "total_matches": len(match_indices), "mode": "extract"},
+            "extracted_source": result_msg
+        }, ensure_ascii=False)
+    
+    elif tool_name == "tavily_search":
+        api_key = "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"
+        query = args_obj.get("query", "") if args_obj else ""
+        
+        try:
+            context = ssl._create_unverified_context()
+            data = json.dumps({"api_key": api_key, "query": query, "max_results": 3}).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.tavily.com/search",
+                data=data,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, context=context) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            
+            summary = "🌐 [타빌리 실시간 검색 결과]\n"
+            if result.get("results"):
+                for idx, item in enumerate(result["results"]):
+                    content = item.get("content", "")
+                    summary += f"{idx + 1}. {item.get('title', '')}\n   {item.get('url', '')}\n   {content[:120]}...\n\n"
+            else:
+                summary += "일치하는 결과가 없거나, 현재 네트워크 상태가 원활하지 않아요."
+            return summary
+        except Exception as e:
+            return f"🚫 타빌리 검색 실행 중 에러 발생: {str(e)}"
+    
+    elif tool_name == "naver_search":
+        query = args_obj.get("query") if args_obj else None
+        search_type = args_obj.get("type", "blog") if args_obj else "blog"
+        
+        if not query:
+            return "오류: 검색어가 전달되지 않았습니다."
+        
+        client_id = "9vt287jrbn"
+        client_secret = "GpwA2tIaAww3YpNY9V6IipnlhKwWj3NRFsiB9uf5"
+        
+        try:
+            context = ssl._create_unverified_context()
+            encoded_query = urllib.parse.quote(query)
+            url = f"https://openapi.naver.com/v1/search/{search_type}.json?query={encoded_query}&display=5&sort=sim"
+            
+            req = urllib.request.Request(url)
+            req.add_header("X-Naver-Client-Id", client_id)
+            req.add_header("X-Naver-Client-Secret", client_secret)
+            
+            with urllib.request.urlopen(req, context=context) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            
+            if not data.get("items"):
+                return f"네이버 [{search_type}] 검색 결과가 없습니다."
+            
+            results = []
+            for idx, item in enumerate(data["items"]):
+                title = re.sub(r'<[^>]*>?', '', item.get("title", ""))
+                description = re.sub(r'<[^>]*>?', '', item.get("description", ""))
+                link = item.get("link") or item.get("originallink", "")
+                results.append(f"[{idx + 1}] {title}\n- 요약: {description}\n- 링크: {link}")
+            
+            return f"네이버 [{search_type}] 검색 결과:\n\n" + "\n\n".join(results)
+        
+        except Exception as e:
+            return f"네이버 검색 실패: {str(e)}"
+    
+    elif tool_name == "jina_reader":
+        input_param = args_obj.get("url") if args_obj else None
+        if not input_param:
+            return "오류: URL 또는 검색어가 전달되지 않았습니다."
+        
+        is_url = bool(re.match(r'^https?://', input_param.strip(), re.I))
+        
+        try:
+            context = ssl._create_unverified_context()
+            
+            if is_url:
+                fetch_url = f"https://r.jina.ai/{input_param.strip()}"
+            else:
+                fetch_url = f"https://s.jina.ai/{urllib.parse.quote(input_param.strip())}"
+            
+            req = urllib.request.Request(fetch_url)
+            req.add_header("Authorization", "jina_f207942eb1df491d8b90fdcad58a5b78ZREqPsp56_QTtzJjP-NRzZaTwDVQ")
+            
+            with urllib.request.urlopen(req, context=context) as resp:
+                text = resp.read().decode("utf-8")
+            
+            if len(text) > 7000:
+                text = text[:7000] + "\n\n(내용이 길어 일부 절삭됨)"
+            return text
+        
+        except Exception as e:
+            return f"Jina 작업 실패: {str(e)}"
+    
+    return "알 수 없는 도구 요청입니다."
+
+
+# ──────────────────────────────────────────────
+# 5. AI 호출 함수 (스트리밍)
+# ──────────────────────────────────────────────
+def call_ai_stream(api_key, provider, model, max_tokens, messages, tools):
+    """AI API를 호출하고 스트리밍 응답을 생성"""
+    
+    if provider == "groq":
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+    elif provider == "openrouter":
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://pppp-2132.onrender.com",
+            "X-Title": "AI Chat Server"
+        }
+    elif provider == "cerebras":
+        url = "https://api.cerebras.ai/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+    elif provider == "together":
+        url = "https://api.together.xyz/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+    elif provider == "deepinfra":
+        url = "https://api.deepinfra.com/v1/openai/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+    
+    body = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "max_tokens": max_tokens if provider != "cerebras" else None,
+        "max_completion_tokens": max_tokens if provider == "cerebras" else None,
+    }
+    
+    if provider != "cerebras":
+        body["tools"] = tools
+    
+    # 불필요한 None 필드 제거
+    body = {k: v for k, v in body.items() if v is not None}
+    
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers)
+    
+    context = ssl._create_unverified_context()
+    return urllib.request.urlopen(req, context=context)
+
+
+# ──────────────────────────────────────────────
+# 6. 메인 엔드포인트
+# ──────────────────────────────────────────────
 @app.route("/v1/chat/completions", methods=["POST"])
 def chat_completions():
+    global current_target, slots, messages, global_html_source
+    
     try:
-        data = request.json
+        data = request.get_json()
         if not data:
-            return jsonify({"error": "요청 바디가 없습니다."}), 400
+            return jsonify({"error": "요청 본문이 없습니다."}), 400
         
+        # --- 클라이언트(프론트)로부터 받은 값 ---
         api_key = data.get("api_key", "")
-        model = data.get("model", "gpt-3.5-turbo")
+        model = data.get("model", "")
         max_tokens = data.get("max_tokens", 4096)
-        messages = data.get("messages", [])
-        html_source = data.get("html_source", "")
-        stream = data.get("stream", False)
+        provider = data.get("provider", "groq")
+        user_messages = data.get("messages", [])
+        html_source = data.get("html_source", global_html_source)  # 폴백: 전역 변수
+        slot_name = data.get("slot_name", "")
+        sys_prompt = data.get("sys_prompt", "")
+        
+        # --- 명령어 처리 (***) ---
+        if user_messages and len(user_messages) > 0:
+            last_msg = user_messages[-1].get("content", "")
+            if last_msg.startswith("***"):
+                result = handle_star_command(last_msg)
+                return jsonify({"result": result, "type": "command"})
+        
+        # --- 슬롯 정보 확인 ---
+        if slot_name and slot_name in slots:
+            current_target = slot_name
+        
+        target_slot = slots.get(current_target, slots["송"])
+        
+        # 클라이언트가 명시적으로 보내면 그거 우선, 아니면 슬롯 정보 사용
+        if not api_key and target_slot.get("apiKey"):
+            api_key = target_slot["apiKey"]
+        if not model and target_slot.get("model"):
+            model = target_slot["model"]
+        if not provider and target_slot.get("provider"):
+            provider = target_slot["provider"]
+        if not max_tokens and target_slot.get("maxTokens"):
+            max_tokens = target_slot["maxTokens"]
+        if not sys_prompt and target_slot.get("sysPrompt"):
+            sys_prompt = target_slot["sysPrompt"]
         
         if not api_key:
-            return jsonify({"error": "API 키가 없습니다."}), 400
-        if not messages:
-            return jsonify({"error": "메시지가 없습니다."}), 400
+            return jsonify({"error": f"API 키가 없습니다. *** {current_target} [API키] 로 등록해주세요."}), 400
         
-        # Provider 감지
-        provider = "openrouter"
-        provider_urls = {
-            "groq": "https://api.groq.com/openai/v1/chat/completions",
-            "openrouter": "https://openrouter.ai/api/v1/chat/completions",
-            "deepinfra": "https://api.deepinfra.com/v1/openai/chat/completions",
-            "together": "https://api.together.xyz/v1/chat/completions"
-        }
+        # 시스템 프롬프트 구성
+        if not sys_prompt:
+            sys_prompt = f"너 이름은 '{current_target}'이고 반말해."
         
-        for p, keyword in [("groq", "gsk_"), ("openrouter", "sk-or"), ("deepinfra", "lQ"), ("together", "Cdx")]:
-            if api_key.startswith(keyword):
-                provider = p
+        # --- 히스토리 관리 (토큰 절약) ---
+        max_history = 16000
+        sys_token = len(sys_prompt)
+        
+        total_token = sys_token
+        packed_messages = [{"role": "system", "content": sys_prompt}]
+        
+        for msg in reversed(user_messages):
+            msg_token = len(msg.get("content", ""))
+            if total_token + msg_token < max_history:
+                packed_messages.insert(1, msg)  # system 다음에 삽입
+                total_token += msg_token
+            else:
                 break
         
-        url = provider_urls.get(provider, "https://openrouter.ai/api/v1/chat/completions")
-        
-        # ===== 도구 실행기 =====
-        def execute_tool(tool_name, tool_args):
-            if tool_name == "read_python_source":
-                return read_python_source(
-                    start_line=tool_args.get("start_line"),
-                    end_line=tool_args.get("end_line")
-                )
-            elif tool_name == "read_source_code":
-                return read_source_code(
-                    html_source=html_source,
-                    target_url=tool_args.get("target_url", ""),
-                    start_line=tool_args.get("start_line"),
-                    end_line=tool_args.get("end_line"),
-                    keyword=tool_args.get("keyword", ""),
-                    lines_before=tool_args.get("lines_before", 3),
-                    lines_after=tool_args.get("lines_after", 3)
-                )
-            elif tool_name == "naver_search":
-                return naver_search(
-                    query=tool_args.get("query", ""),
-                    search_type=tool_args.get("search_type", "blog")
-                )
-            elif tool_name == "tavily_search":
-                return tavily_search(tool_args.get("query", ""))
-            elif tool_name == "jina_reader":
-                return jina_reader(tool_args.get("url_or_query", ""))
-            return json.dumps({"error": "알 수 없는 도구입니다."})
-        
-        # ===== AI 호출 함수 (수정: cerebras 조건 제거) =====
-        def call_ai(messages_for_ai, tools_included=True):
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": request.host_url or "http://localhost:5000",
-                "X-Title": "AI Chat Backend"
-            }
+        # --- AI 호출 (스트리밍 응답 생성) ---
+        def generate():
+            nonlocal api_key, provider, model, max_tokens, packed_messages, html_source
             
-            body = {
-                "model": model,
-                "messages": messages_for_ai,
-                "max_tokens": max_tokens,
-                "stream": stream
-            }
-            
-            # 수정: provider != "cerebras" 조건 제거 -> tools_included가 True면 항상 tools 포함
-            if tools_included:
-                body["tools"] = TOOLS
-            
-            return requests.post(url, headers=headers, json=body, stream=stream, timeout=120)
-        
-        # ===== 스트리밍 처리 =====
-        if stream:
-            return Response(
-                stream_with_context(handle_stream_with_tools(
-                    call_ai(messages), html_source, messages, call_ai, execute_tool
-                )),
-                mimetype="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no"
-                }
-            )
-        
-        # ===== 일반 응답 (도구 호출 포함, 수정: cerebras 조건 제거) =====
-        result = call_ai(messages).json()
-        
-        for _ in range(10):
-            choice = result.get("choices", [{}])[0]
-            message = choice.get("message", {})
-            
-            if "tool_calls" not in message or not message["tool_calls"]:
-                break
-            
-            # 도구 실행
-            tool_results = []
-            for tc in message["tool_calls"]:
-                func_name = tc["function"]["name"]
-                func_args = json.loads(tc["function"]["arguments"]) if tc["function"].get("arguments") else {}
-                result_text = execute_tool(func_name, func_args)
-                tool_results.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result_text
-                })
-            
-            messages.append(message)
-            messages.extend(tool_results)
-            
-            result = call_ai(messages, tools_included=False).json()
-        
-        return jsonify(result)
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# ===== 스트리밍 처리 (수정: [DONE] 순서 변경) =====
-def handle_stream_with_tools(initial_response, html_source, original_messages, call_ai, execute_tool):
-    """SSE 스트리밍 + 도구 호출 루프
-    [DONE]은 도구 호출 처리까지 완료된 후 최종 시점에만 보냅니다.
-    """
-    buffer = ""
-    tool_calls_acc = {}
-    full_content = ""
-    full_reasoning = ""
-    
-    # 1차 스트리밍 파싱
-    for chunk in initial_response.iter_content(chunk_size=1, decode_unicode=True):
-        if chunk:
-            buffer += chunk
-            if "\n" in buffer:
-                lines = buffer.split("\n")
-                for line in lines[:-1]:
-                    line = line.strip()
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            # 수정: [DONE] 받았지만 tool_calls_acc가 있으면 먼저 처리
-                            if tool_calls_acc:
-                                yield from process_tool_calls_and_resume(
-                                    tool_calls_acc, full_content, full_reasoning,
-                                    original_messages, call_ai, execute_tool, html_source
-                                )
-                            # 모든 처리 완료 후 최종 [DONE]
-                            yield "data: [DONE]\n\n"
-                            return
+            try:
+                response = call_ai_stream(api_key, provider, model, max_tokens, packed_messages, my_tools)
+                
+                buffer = ""
+                full_content = ""
+                full_reasoning = ""
+                tool_calls_acc = []
+                finish_reason = None
+                
+                while True:
+                    chunk = response.read(4096)
+                    if not chunk:
+                        break
+                    
+                    buffer += chunk.decode("utf-8", errors="replace")
+                    lines = buffer.split("\n")
+                    buffer = lines.pop()
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if not line or line.startswith(":"):
+                            continue
+                        if line == "data: [DONE]":
+                            break
                         
-                        try:
-                            parsed = json.loads(data_str)
-                            choices = parsed.get("choices", [])
-                            if choices:
+                        if line.startswith("data: "):
+                            json_str = line[6:]
+                            try:
+                                parsed = json.loads(json_str)
+                                choices = parsed.get("choices", [])
+                                if not choices:
+                                    continue
+                                
                                 choice = choices[0]
+                                
+                                if choice.get("finish_reason"):
+                                    finish_reason = choice["finish_reason"]
+                                
                                 delta = choice.get("delta", {})
+                                if not delta:
+                                    continue
                                 
-                                # 추론 과정 (DeepSeek 등)
-                                reasoning = delta.get("reasoning") or delta.get("reasoning_content") or ""
-                                if reasoning:
-                                    full_reasoning += reasoning
-                                    yield f"data: {json.dumps({'choices': [{'delta': {'reasoning': reasoning}}]})}\n\n"
+                                # Reasoning
+                                reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                                if reasoning_chunk:
+                                    full_reasoning += reasoning_chunk
                                 
-                                # 일반 내용
-                                content = delta.get("content", "")
-                                if content:
-                                    full_content += content
-                                    yield f"data: {json.dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
+                                # Content
+                                content_chunk = delta.get("content", "")
+                                if content_chunk:
+                                    full_content += content_chunk
                                 
-                                # 도구 호출
-                                if "tool_calls" in delta:
-                                    for tc in delta["tool_calls"]:
+                                # Tool calls
+                                tool_calls = delta.get("tool_calls", [])
+                                if tool_calls:
+                                    for tc in tool_calls:
                                         idx = tc.get("index", 0)
-                                        if idx not in tool_calls_acc:
-                                            tool_calls_acc[idx] = {
+                                        if idx >= len(tool_calls_acc):
+                                            tool_calls_acc.append({
                                                 "id": tc.get("id", ""),
                                                 "type": tc.get("type", "function"),
                                                 "function": {"name": "", "arguments": ""}
-                                            }
+                                            })
                                         if tc.get("id"):
                                             tool_calls_acc[idx]["id"] = tc["id"]
                                         if tc.get("function"):
@@ -569,89 +572,298 @@ def handle_stream_with_tools(initial_response, html_source, original_messages, c
                                             if tc["function"].get("arguments"):
                                                 tool_calls_acc[idx]["function"]["arguments"] += tc["function"]["arguments"]
                                 
-                                # finish_reason 체크
-                                if choice.get("finish_reason") == "tool_calls":
-                                    yield from process_tool_calls_and_resume(
-                                        tool_calls_acc, full_content, full_reasoning,
-                                        original_messages, call_ai, execute_tool, html_source
-                                    )
-                                    # 수정: 도구 호출 처리 후에도 [DONE] 보냄
-                                    yield "data: [DONE]\n\n"
-                                    return
-                                    
-                        except json.JSONDecodeError:
-                            pass
-                buffer = lines[-1]
-
-def process_tool_calls_and_resume(tool_calls_acc, accumulated_content, accumulated_reasoning,
-                                   original_messages, call_ai, execute_tool, html_source):
-    """도구 호출 실행 후 AI 재요청"""
-    tool_messages = []
-    tool_calls_list = []
+                                # SSE 데이터를 그대로 프론트로 전달
+                                yield f"data: {json_str}\n\n"
+                                
+                            except json.JSONDecodeError:
+                                pass
+                
+                # 도구 호출이 있으면 재요청
+                if tool_calls_acc and provider != "cerebras":
+                    tool_call = tool_calls_acc[0]
+                    tool_name = tool_call["function"]["name"]
+                    
+                    tool_args = {}
+                    try:
+                        tool_args = json.loads(tool_call["function"]["arguments"])
+                    except:
+                        pass
+                    
+                    yield f"data: {json.dumps({'choices': [{'delta': {'content': f'🛠️ AI가 도구를 호출합니다: [{tool_name}]\\n'}, 'finish_reason': None}]})}\n\n"
+                    
+                    tool_result = execute_tool(tool_name, tool_args, html_source)
+                    
+                    # 재요청 메시지 구성
+                    tool_messages = list(packed_messages)
+                    tool_messages.append({
+                        "role": "assistant",
+                        "tool_calls": tool_calls_acc
+                    })
+                    tool_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": tool_result
+                    })
+                    
+                    yield f"data: {json.dumps({'choices': [{'delta': {'content': '🔍 도구 실행 결과를 분석 중...\\n'}, 'finish_reason': None}]})}\n\n"
+                    
+                    # 2차 AI 호출 (도구 제외)
+                    try:
+                        response2 = call_ai_stream(api_key, provider, model, max_tokens, tool_messages, [])
+                        
+                        buffer2 = ""
+                        while True:
+                            chunk2 = response2.read(4096)
+                            if not chunk2:
+                                break
+                            
+                            buffer2 += chunk2.decode("utf-8", errors="replace")
+                            lines2 = buffer2.split("\n")
+                            buffer2 = lines2.pop()
+                            
+                            for line in lines2:
+                                line = line.strip()
+                                if not line or line.startswith(":") or line == "data: [DONE]":
+                                    continue
+                                if line.startswith("data: "):
+                                    yield f"{line}\n\n"
+                    
+                    except Exception as e2:
+                        yield f"data: {json.dumps({'choices': [{'delta': {'content': f'에러: {str(e2)}'}, 'finish_reason': 'stop'}]})}\n\n"
+                
+                yield "data: [DONE]\n\n"
+                
+                # 히스토리 저장
+                if full_content:
+                    global messages
+                    if user_messages:
+                        user_msg_content = user_messages[-1].get("content", "") if user_messages else ""
+                        messages.append({"role": "user", "content": user_msg_content})
+                    
+                    # reasoning 추출
+                    reasoning_match = re.search(r'<(think|thought|thinking)>(.*?)</\1>', full_content, re.I | re.DOTALL)
+                    final_reasoning = full_reasoning
+                    final_content = full_content
+                    if reasoning_match:
+                        final_reasoning = reasoning_match.group(2).strip()
+                        final_content = re.sub(r'<(think|thought|thinking)>.*?</\1>', '', full_content, flags=re.I | re.DOTALL).strip()
+                    
+                    messages.append({
+                        "role": "assistant",
+                        "content": final_content,
+                        "reasoning": final_reasoning,
+                        "name": current_target
+                    })
+                    
+                    if len(messages) > 50:
+                        messages = messages[-50:]
+                    save_history(messages)
+                
+            except Exception as e:
+                yield f"data: {json.dumps({'choices': [{'delta': {'content': f'에러: {str(e)}\n{traceback.format_exc()}'}, 'finish_reason': 'stop'}]})}\n\n"
+                yield "data: [DONE]\n\n"
+        
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive"
+            }
+        )
     
-    for idx in sorted(tool_calls_acc.keys()):
-        tc = tool_calls_acc[idx]
-        args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
-        
-        # 도구 실행
-        tool_result = execute_tool(tc["function"]["name"], args)
-        tool_name = tc["function"]["name"]
-        
-        yield f"data: {json.dumps({'choices': [{'delta': {'content': f'[도구 호출: {tool_name}]'}}]})}\n\n"
-        
-        tool_calls_list.append(tc)
-        tool_messages.append({
-            "role": "tool",
-            "tool_call_id": tc["id"],
-            "content": tool_result
+    except Exception as e:
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+# ──────────────────────────────────────────────
+# 7. 명령어 처리 (***)
+# ──────────────────────────────────────────────
+def handle_star_command(raw_input):
+    global slots, current_target
+    
+    tokens = re.sub(r'^\*\*\*\s*', '', raw_input).strip().split()
+    if not tokens:
+        return "❌ 형식: *** [슬롯명] [설정값들...]"
+    
+    if "지워줘" in raw_input:
+        global messages
+        messages = []
+        save_history(messages)
+        return "대화 기록이 삭제되었습니다."
+    
+    if "백업해" in raw_input:
+        return backup_history()
+    
+    slot_names = list(slots.keys())
+    target_name = None
+    for t in tokens:
+        if t in slot_names:
+            target_name = t
+            break
+    
+    if not target_name:
+        return f"❌ 슬롯을 못 찾았어. 사용 가능: {', '.join(slot_names)}"
+    
+    rest = [t for t in tokens if t != target_name]
+    
+    if not rest:
+        s = slots[target_name]
+        api_key_status = "등록됨" if s.get("apiKey") else "없음"
+        return f"ℹ️ [{target_name}] 현재 설정:\n- 모델: {s['model']}\n- 키: {api_key_status}\n- 토큰: {s.get('maxTokens', 4096)}\n- 프롬프트: {s.get('sysPrompt', '없음')}"
+    
+    for t in rest:
+        if t.isdigit():
+            slots[target_name]["maxTokens"] = int(t)
+        elif t.startswith("gsk_"):
+            slots[target_name]["apiKey"] = t
+            slots[target_name]["provider"] = "groq"
+        elif t.startswith("sk-or-v1-"):
+            slots[target_name]["apiKey"] = t
+            slots[target_name]["provider"] = "openrouter"
+        elif t.startswith("lQ"):
+            slots[target_name]["apiKey"] = t
+            slots[target_name]["provider"] = "deepinfra"
+        elif t.startswith("Cdx"):
+            slots[target_name]["apiKey"] = t
+            slots[target_name]["provider"] = "together"
+        elif t.startswith("csk"):
+            slots[target_name]["apiKey"] = t
+            slots[target_name]["provider"] = "cerebras"
+        elif "/" in t or "-" in t:
+            slots[target_name]["model"] = t
+        else:
+            slots[target_name]["sysPrompt"] = t
+    
+    save_slots(slots)
+    
+    summary = [f"✅ [{target_name}] 슬롯 설정 업데이트 완료!"]
+    if any(t.startswith(("gsk_", "sk-or-v1-", "lQ", "Cdx", "csk")) for t in rest):
+        summary.append(f"🔑 API키 등록 완료 ({slots[target_name]['provider']})")
+    if any("/" in t or "-" in t for t in rest):
+        summary.append(f"🤖 모델: {slots[target_name]['model']}")
+    
+    return '\n'.join(summary)
+
+
+def backup_history():
+    global messages
+    if not messages:
+        return "⚠️ 백업할 대화 내용이 없습니다."
+    
+    export_text = "=== AI 채팅 대화 백업 ===\n\n"
+    for m in messages:
+        role_name = "나" if m["role"] == "user" else (m.get("name", "AI"))
+        export_text += f"[{role_name}]\n"
+        if m.get("reasoning"):
+            export_text += f"<생각 과정>\n{m['reasoning']}\n</생각 과정>\n"
+        export_text += f"{m['content']}\n\n-----------------------------------\n\n"
+    
+    # 파일 저장
+    today = time.strftime("%Y-%m-%d")
+    filename = f"chat_backup_{today}.txt"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(export_text)
+    
+    return f"💾 대화 내용이 {filename}에 저장되었습니다!"
+
+
+# ──────────────────────────────────────────────
+# 8. 슬롯 관리 API (프론트에서 호출)
+# ──────────────────────────────────────────────
+@app.route("/v1/slots", methods=["GET", "POST"])
+def manage_slots():
+    global slots
+    
+    if request.method == "GET":
+        # API 키는 보안상 마스킹해서 반환
+        safe_slots = {}
+        for name, slot in slots.items():
+            safe_slots[name] = {
+                "provider": slot.get("provider"),
+                "model": slot.get("model"),
+                "maxTokens": slot.get("maxTokens"),
+                "sysPrompt": slot.get("sysPrompt"),
+                "apiKey": "등록됨" if slot.get("apiKey") else "없음"
+            }
+        return jsonify({
+            "slots": safe_slots,
+            "currentTarget": current_target
         })
     
-    # AI 재요청 준비
-    messages_copy = list(original_messages)
-    if accumulated_content or accumulated_reasoning:
-        assistant_msg = {"role": "assistant", "content": accumulated_content}
-        if accumulated_reasoning:
-            assistant_msg["reasoning"] = accumulated_reasoning
-        if tool_calls_list:
-            assistant_msg["tool_calls"] = tool_calls_list
-        messages_copy.append(assistant_msg)
+    elif request.method == "POST":
+        data = request.get_json()
+        if data and "slots" in data:
+            slots = data["slots"]
+            save_slots(slots)
+        if data and "currentTarget" in data:
+            current_target = data["currentTarget"]
+        return jsonify({"status": "ok"})
+
+
+@app.route("/v1/history", methods=["GET", "POST", "DELETE"])
+def manage_history():
+    global messages
+    
+    if request.method == "GET":
+        return jsonify({"messages": messages})
+    
+    elif request.method == "POST":
+        data = request.get_json()
+        if data and "messages" in data:
+            messages = data["messages"]
+            save_history(messages)
+        return jsonify({"status": "ok"})
+    
+    elif request.method == "DELETE":
+        messages = []
+        save_history(messages)
+        return jsonify({"status": "cleared"})
+
+
+@app.route("/v1/switch", methods=["POST"])
+def switch_slot():
+    global current_target, slots
+    
+    data = request.get_json()
+    target = data.get("target", "") if data else ""
+    
+    if target in slots:
+        current_target = target
+        return jsonify({"status": "ok", "currentTarget": current_target})
     else:
-        messages_copy.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": tool_calls_list
-        })
-    
-    messages_copy.extend(tool_messages)
-    
-    # 재요청 스트리밍
-    retry_response = call_ai(messages_copy, tools_included=False)
-    
-    # 2차 스트리밍 파싱 및 출력
-    buffer2 = ""
-    for chunk in retry_response.iter_content(chunk_size=1, decode_unicode=True):
-        if chunk:
-            buffer2 += chunk
-            if "\n" in buffer2:
-                lines = buffer2.split("\n")
-                for line in lines[:-1]:
-                    line = line.strip()
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            # 수정: 2차 스트리밍에서 [DONE]은 여기서 yield하지 않고
-                            # process_tool_calls_and_resume 호출한 쪽에서 처리
-                            return
-                        yield line + "\n\n"
-                buffer2 = lines[-1]
+        return jsonify({"error": f"슬롯 '{target}'을 찾을 수 없습니다."}), 404
 
-# ===== 헬스 체크 =====
+
+# ──────────────────────────────────────────────
+# 9. HTML 소스 업데이트 엔드포인트
+# ──────────────────────────────────────────────
+@app.route("/v1/update_html", methods=["POST"])
+def update_html():
+    global global_html_source
+    
+    data = request.get_json()
+    if not data or "html_source" not in data:
+        return jsonify({"error": "html_source 필드가 필요합니다."}), 400
+    
+    global_html_source = data["html_source"]
+    length = len(global_html_source)
+    
+    return jsonify({
+        "status": "ok",
+        "message": f"HTML 소스가 업데이트되었습니다. (길이: {length}자)"
+    })
+
+
 @app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "ok", "server": "Flask AI Backend", "version": "2.1"})
+def health():
+    return jsonify({"status": "ok", "slots": list(slots.keys()), "currentTarget": current_target})
 
+
+# ──────────────────────────────────────────────
+# 메인 실행
+# ──────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
-
-
