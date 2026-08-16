@@ -35,14 +35,14 @@ def load_slots():
             "apiKey": "",
             "model": "llama-3.3-70b-versatile",
             "sysPrompt": "",
-            max_tokens = activeSlot.get("maxTokens", 4096)
+            "maxTokens": 4096
         },
         "땡킹": {
             "provider": "groq",
             "apiKey": "",
             "model": "qwen/qwen3.6-27b",
             "sysPrompt": "",
-            max_tokens = activeSlot.get("maxTokens", 4096)
+            "maxTokens": 4096
         }
     }
 
@@ -409,11 +409,13 @@ def call_ai_stream(api_key, provider, model, max_tokens, messages, tools):
         "model": model,
         "messages": messages,
         "stream": True,
-        "max_tokens": max_tokens if provider != "cerebras" else None,
-        "max_completion_tokens": max_tokens if provider == "cerebras" else None,
+        "max_tokens": max_tokens,
     }
     
-    if provider != "cerebras":
+    if provider == "cerebras":
+        body.pop("max_tokens", None)
+        body["max_completion_tokens"] = max_tokens
+    else:
         body["tools"] = tools
     
     body = {k: v for k, v in body.items() if v is not None}
@@ -439,7 +441,6 @@ def chat_completions():
         
         api_key = data.get("api_key", "")
         model = data.get("model", "")
-        max_tokens = data.get("max_tokens", 4096)
         provider = data.get("provider", "groq")
         user_messages = data.get("messages", [])
         html_source = data.get("html_source", global_html_source)
@@ -463,10 +464,11 @@ def chat_completions():
             model = target_slot["model"]
         if not provider and target_slot.get("provider"):
             provider = target_slot["provider"]
-        if not max_tokens and target_slot.get("maxTokens"):
-            max_tokens = target_slot["maxTokens"]
         if not sys_prompt and target_slot.get("sysPrompt"):
             sys_prompt = target_slot["sysPrompt"]
+        
+        # 🔥 수정: 클라이언트 → 슬롯 → 기본값 순서로 max_tokens 결정
+        max_tokens = data.get("max_tokens", target_slot.get("maxTokens", 4096)) or 4096
         
         if not api_key:
             return jsonify({"error": f"API 키가 없습니다. *** {current_target} [API키] 로 등록해주세요."}), 400
@@ -498,7 +500,6 @@ def chat_completions():
                 full_reasoning = ""
                 tool_calls_acc = []
                 
-                # 한 줄 단위 실시간 스트리밍 처리 (버퍼 끊김 방지)
                 for line in response:
                     line = line.decode("utf-8", errors="replace").strip()
                     if not line or line.startswith(":"):
