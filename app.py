@@ -305,8 +305,7 @@ def execute_tool(tool_name, args_obj, html_source=None):
         if not query:
             return "오류: 검색어가 전달되지 않았습니다."
         
-client_id = os.environ.get("NAVER_CLIENT_ID", "")
- client_secret = os.environ.get("NAVER_CLIENT_SECRET", "")
+client_id = os.environ.get("NAVER_CLIENT_ID", ""); client_secret = os.environ.get("NAVER_CLIENT_SECRET", "")
         
         try:
             context = ssl._create_unverified_context()
