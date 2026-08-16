@@ -298,14 +298,16 @@ def execute_tool(tool_name, args_obj, html_source=None):
         except Exception as e:
             return f"🚫 타빌리 검색 실행 중 에러 발생: {str(e)}"
     
-    elif tool_name == "naver_search":
+elif tool_name == "naver_search":
         query = args_obj.get("query") if args_obj else None
         search_type = args_obj.get("type", "blog") if args_obj else "blog"
         
         if not query:
             return "오류: 검색어가 전달되지 않았습니다."
         
-client_id = os.environ.get("NAVER_CLIENT_ID", ""); client_secret = os.environ.get("NAVER_CLIENT_SECRET", "")
+        # 👇 들여쓰기를 8칸(탭 2번)으로 깔끔하게 맞춘 정답 코드
+        client_id = os.environ.get("NAVER_CLIENT_ID", "")
+        client_secret = os.environ.get("NAVER_CLIENT_SECRET", "")
         
         try:
             context = ssl._create_unverified_context()
