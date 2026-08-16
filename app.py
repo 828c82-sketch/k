@@ -273,7 +273,7 @@ def execute_tool(tool_name, args_obj, html_source=None):
         }, ensure_ascii=False)
     
     elif tool_name == "tavily_search":
-        api_key = "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"
+        api_key = os.environ.get("TAVILY_API_KEY", "")
         query = args_obj.get("query", "") if args_obj else ""
         
         try:
@@ -305,8 +305,7 @@ def execute_tool(tool_name, args_obj, html_source=None):
         if not query:
             return "오류: 검색어가 전달되지 않았습니다."
         
-        client_id = "9vt287jrbn"
-        client_secret = "GpwA2tIaAww3YpNY9V6IipnlhKwWj3NRFsiB9uf5"
+client_id = os.environ.get("NAVER_CLIENT_ID", "") client_secret = os.environ.get("NAVER_CLIENT_SECRET", "")
         
         try:
             context = ssl._create_unverified_context()
@@ -351,7 +350,7 @@ def execute_tool(tool_name, args_obj, html_source=None):
                 fetch_url = f"https://s.jina.ai/{urllib.parse.quote(input_param.strip())}"
             
             req = urllib.request.Request(fetch_url)
-            req.add_header("Authorization", "jina_f207942eb1df491d8b90fdcad58a5b78ZREqPsp56_QTtzJjP-NRzZaTwDVQ")
+            req.add_header("Authorization", os.environ.get("JINA_API_KEY", ""))
             
             with urllib.request.urlopen(req, context=context) as resp:
                 text = resp.read().decode("utf-8")
