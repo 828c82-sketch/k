@@ -35,14 +35,14 @@ def load_slots():
             "apiKey": "",
             "model": "llama-3.3-70b-versatile",
             "sysPrompt": "",
-            "maxTokens": 4096
+            max_tokens = activeSlot.get("maxTokens", 4096)
         },
         "땡킹": {
             "provider": "groq",
             "apiKey": "",
             "model": "qwen/qwen3.6-27b",
             "sysPrompt": "",
-            "maxTokens": 4096
+            max_tokens = activeSlot.get("maxTokens", 4096)
         }
     }
 
