@@ -165,7 +165,6 @@ my_tools = [
 # ──────────────────────────────────────────────
 def execute_tool(tool_name, args_obj, html_source=None):
     if tool_name == "get_app_diagnostics":
-        # 파이썬 서버 자신의 코드를 보여줌
         current_source = open(__file__, "r", encoding="utf-8").read()
         mode = args_obj.get("mode", "full") if args_obj else "full"
         
@@ -175,7 +174,6 @@ def execute_tool(tool_name, args_obj, html_source=None):
                 "source_code": current_source
             }, ensure_ascii=False)
         
-        # extract 모드
         target = args_obj.get("target", "") if args_obj else ""
         lines_before = args_obj.get("lines_before", 3) if args_obj else 3
         lines_after = args_obj.get("lines_after", 3) if args_obj else 3
@@ -284,7 +282,7 @@ def execute_tool(tool_name, args_obj, html_source=None):
                 data=data,
                 headers={"Content-Type": "application/json"}
             )
-            with urllib.request.urlopen(req, context=context) as resp:
+            with urllib.request.urlopen(req, context=context, timeout=30) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
             
             summary = "🌐 [타빌리 실시간 검색 결과]\n"
@@ -298,14 +296,13 @@ def execute_tool(tool_name, args_obj, html_source=None):
         except Exception as e:
             return f"🚫 타빌리 검색 실행 중 에러 발생: {str(e)}"
     
-elif tool_name == "naver_search":
+    elif tool_name == "naver_search":
         query = args_obj.get("query") if args_obj else None
         search_type = args_obj.get("type", "blog") if args_obj else "blog"
         
         if not query:
             return "오류: 검색어가 전달되지 않았습니다."
         
-        # 👇 들여쓰기를 8칸(탭 2번)으로 깔끔하게 맞춘 정답 코드
         client_id = os.environ.get("NAVER_CLIENT_ID", "")
         client_secret = os.environ.get("NAVER_CLIENT_SECRET", "")
         
@@ -318,7 +315,7 @@ elif tool_name == "naver_search":
             req.add_header("X-Naver-Client-Id", client_id)
             req.add_header("X-Naver-Client-Secret", client_secret)
             
-            with urllib.request.urlopen(req, context=context) as resp:
+            with urllib.request.urlopen(req, context=context, timeout=30) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             
             if not data.get("items"):
@@ -354,7 +351,7 @@ elif tool_name == "naver_search":
             req = urllib.request.Request(fetch_url)
             req.add_header("Authorization", os.environ.get("JINA_API_KEY", ""))
             
-            with urllib.request.urlopen(req, context=context) as resp:
+            with urllib.request.urlopen(req, context=context, timeout=30) as resp:
                 text = resp.read().decode("utf-8")
             
             if len(text) > 7000:
@@ -419,14 +416,13 @@ def call_ai_stream(api_key, provider, model, max_tokens, messages, tools):
     if provider != "cerebras":
         body["tools"] = tools
     
-    # 불필요한 None 필드 제거
     body = {k: v for k, v in body.items() if v is not None}
     
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers)
     
     context = ssl._create_unverified_context()
-    return urllib.request.urlopen(req, context=context)
+    return urllib.request.urlopen(req, context=context, timeout=120)
 
 
 # ──────────────────────────────────────────────
@@ -441,30 +437,26 @@ def chat_completions():
         if not data:
             return jsonify({"error": "요청 본문이 없습니다."}), 400
         
-        # --- 클라이언트(프론트)로부터 받은 값 ---
         api_key = data.get("api_key", "")
         model = data.get("model", "")
         max_tokens = data.get("max_tokens", 4096)
         provider = data.get("provider", "groq")
         user_messages = data.get("messages", [])
-        html_source = data.get("html_source", global_html_source)  # 폴백: 전역 변수
+        html_source = data.get("html_source", global_html_source)
         slot_name = data.get("slot_name", "")
         sys_prompt = data.get("sys_prompt", "")
         
-        # --- 명령어 처리 (***) ---
         if user_messages and len(user_messages) > 0:
             last_msg = user_messages[-1].get("content", "")
             if last_msg.startswith("***"):
                 result = handle_star_command(last_msg)
                 return jsonify({"result": result, "type": "command"})
         
-        # --- 슬롯 정보 확인 ---
         if slot_name and slot_name in slots:
             current_target = slot_name
         
         target_slot = slots.get(current_target, slots["송"])
         
-        # 클라이언트가 명시적으로 보내면 그거 우선, 아니면 슬롯 정보 사용
         if not api_key and target_slot.get("apiKey"):
             api_key = target_slot["apiKey"]
         if not model and target_slot.get("model"):
@@ -479,11 +471,9 @@ def chat_completions():
         if not api_key:
             return jsonify({"error": f"API 키가 없습니다. *** {current_target} [API키] 로 등록해주세요."}), 400
         
-        # 시스템 프롬프트 구성
         if not sys_prompt:
             sys_prompt = f"너 이름은 '{current_target}'이고 반말해."
         
-        # --- 히스토리 관리 (토큰 절약) ---
         max_history = 16000
         sys_token = len(sys_prompt)
         
@@ -493,93 +483,73 @@ def chat_completions():
         for msg in reversed(user_messages):
             msg_token = len(msg.get("content", ""))
             if total_token + msg_token < max_history:
-                packed_messages.insert(1, msg)  # system 다음에 삽입
+                packed_messages.insert(1, msg)
                 total_token += msg_token
             else:
                 break
         
-        # --- AI 호출 (스트리밍 응답 생성) ---
         def generate():
             nonlocal api_key, provider, model, max_tokens, packed_messages, html_source
             
             try:
                 response = call_ai_stream(api_key, provider, model, max_tokens, packed_messages, my_tools)
                 
-                buffer = ""
                 full_content = ""
                 full_reasoning = ""
                 tool_calls_acc = []
-                finish_reason = None
                 
-                while True:
-                    chunk = response.read(4096)
-                    if not chunk:
+                # 한 줄 단위 실시간 스트리밍 처리 (버퍼 끊김 방지)
+                for line in response:
+                    line = line.decode("utf-8", errors="replace").strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if line == "data: [DONE]":
                         break
                     
-                    buffer += chunk.decode("utf-8", errors="replace")
-                    lines = buffer.split("\n")
-                    buffer = lines.pop()
-                    
-                    for line in lines:
-                        line = line.strip()
-                        if not line or line.startswith(":"):
-                            continue
-                        if line == "data: [DONE]":
-                            break
-                        
-                        if line.startswith("data: "):
-                            json_str = line[6:]
-                            try:
-                                parsed = json.loads(json_str)
-                                choices = parsed.get("choices", [])
-                                if not choices:
-                                    continue
-                                
-                                choice = choices[0]
-                                
-                                if choice.get("finish_reason"):
-                                    finish_reason = choice["finish_reason"]
-                                
-                                delta = choice.get("delta", {})
-                                if not delta:
-                                    continue
-                                
-                                # Reasoning
-                                reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content") or ""
-                                if reasoning_chunk:
-                                    full_reasoning += reasoning_chunk
-                                
-                                # Content
-                                content_chunk = delta.get("content", "")
-                                if content_chunk:
-                                    full_content += content_chunk
-                                
-                                # Tool calls
-                                tool_calls = delta.get("tool_calls", [])
-                                if tool_calls:
-                                    for tc in tool_calls:
-                                        idx = tc.get("index", 0)
-                                        if idx >= len(tool_calls_acc):
-                                            tool_calls_acc.append({
-                                                "id": tc.get("id", ""),
-                                                "type": tc.get("type", "function"),
-                                                "function": {"name": "", "arguments": ""}
-                                            })
-                                        if tc.get("id"):
-                                            tool_calls_acc[idx]["id"] = tc["id"]
-                                        if tc.get("function"):
-                                            if tc["function"].get("name"):
-                                                tool_calls_acc[idx]["function"]["name"] = tc["function"]["name"]
-                                            if tc["function"].get("arguments"):
-                                                tool_calls_acc[idx]["function"]["arguments"] += tc["function"]["arguments"]
-                                
-                                # SSE 데이터를 그대로 프론트로 전달
-                                yield f"data: {json_str}\n\n"
-                                
-                            except json.JSONDecodeError:
-                                pass
+                    if line.startswith("data: "):
+                        json_str = line[6:]
+                        try:
+                            parsed = json.loads(json_str)
+                            choices = parsed.get("choices", [])
+                            if not choices:
+                                continue
+                            
+                            choice = choices[0]
+                            delta = choice.get("delta", {})
+                            if not delta:
+                                continue
+                            
+                            reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                            if reasoning_chunk:
+                                full_reasoning += reasoning_chunk
+                            
+                            content_chunk = delta.get("content", "")
+                            if content_chunk:
+                                full_content += content_chunk
+                            
+                            tool_calls = delta.get("tool_calls", [])
+                            if tool_calls:
+                                for tc in tool_calls:
+                                    idx = tc.get("index", 0)
+                                    if idx >= len(tool_calls_acc):
+                                        tool_calls_acc.append({
+                                            "id": tc.get("id", ""),
+                                            "type": tc.get("type", "function"),
+                                            "function": {"name": "", "arguments": ""}
+                                        })
+                                    if tc.get("id"):
+                                        tool_calls_acc[idx]["id"] = tc["id"]
+                                    if tc.get("function"):
+                                        if tc["function"].get("name"):
+                                            tool_calls_acc[idx]["function"]["name"] = tc["function"]["name"]
+                                        if tc["function"].get("arguments"):
+                                            tool_calls_acc[idx]["function"]["arguments"] += tc["function"]["arguments"]
+                            
+                            yield f"data: {json_str}\n\n"
+                            
+                        except json.JSONDecodeError:
+                            pass
                 
-                # 도구 호출이 있으면 재요청
                 if tool_calls_acc and provider != "cerebras":
                     tool_call = tool_calls_acc[0]
                     tool_name = tool_call["function"]["name"]
@@ -594,7 +564,6 @@ def chat_completions():
                     
                     tool_result = execute_tool(tool_name, tool_args, html_source)
                     
-                    # 재요청 메시지 구성
                     tool_messages = list(packed_messages)
                     tool_messages.append({
                         "role": "assistant",
@@ -608,40 +577,27 @@ def chat_completions():
                     
                     yield f"data: {json.dumps({'choices': [{'delta': {'content': '🔍 도구 실행 결과를 분석 중...\\n'}, 'finish_reason': None}]})}\n\n"
                     
-                    # 2차 AI 호출 (도구 제외)
                     try:
                         response2 = call_ai_stream(api_key, provider, model, max_tokens, tool_messages, [])
                         
-                        buffer2 = ""
-                        while True:
-                            chunk2 = response2.read(4096)
-                            if not chunk2:
-                                break
-                            
-                            buffer2 += chunk2.decode("utf-8", errors="replace")
-                            lines2 = buffer2.split("\n")
-                            buffer2 = lines2.pop()
-                            
-                            for line in lines2:
-                                line = line.strip()
-                                if not line or line.startswith(":") or line == "data: [DONE]":
-                                    continue
-                                if line.startswith("data: "):
-                                    yield f"{line}\n\n"
+                        for line2 in response2:
+                            line2 = line2.decode("utf-8", errors="replace").strip()
+                            if not line2 or line2.startswith(":") or line2 == "data: [DONE]":
+                                continue
+                            if line2.startswith("data: "):
+                                yield f"{line2}\n\n"
                     
                     except Exception as e2:
                         yield f"data: {json.dumps({'choices': [{'delta': {'content': f'에러: {str(e2)}'}, 'finish_reason': 'stop'}]})}\n\n"
                 
                 yield "data: [DONE]\n\n"
                 
-                # 히스토리 저장
                 if full_content:
                     global messages
                     if user_messages:
                         user_msg_content = user_messages[-1].get("content", "") if user_messages else ""
                         messages.append({"role": "user", "content": user_msg_content})
                     
-                    # reasoning 추출
                     reasoning_match = re.search(r'<(think|thought|thinking)>(.*?)</\1>', full_content, re.I | re.DOTALL)
                     final_reasoning = full_reasoning
                     final_content = full_content
@@ -761,7 +717,6 @@ def backup_history():
             export_text += f"<생각 과정>\n{m['reasoning']}\n</생각 과정>\n"
         export_text += f"{m['content']}\n\n-----------------------------------\n\n"
     
-    # 파일 저장
     today = time.strftime("%Y-%m-%d")
     filename = f"chat_backup_{today}.txt"
     with open(filename, "w", encoding="utf-8") as f:
@@ -778,7 +733,6 @@ def manage_slots():
     global slots
     
     if request.method == "GET":
-        # API 키는 보안상 마스킹해서 반환
         safe_slots = {}
         for name, slot in slots.items():
             safe_slots[name] = {
