@@ -77,22 +77,22 @@ messages = load_history()
 # 3. 도구 정의
 # ──────────────────────────────────────────────
 my_tools = [
-    {
+{
         "type": "function",
         "function": {
             "name": "get_app_diagnostics",
-            "description": "Retrieves app diagnostics. 'full' mode for entire source. 'extract' mode for precise keyword slicing. Fast, case-insensitive, finds bottom matches reliably.",
+            "description": "파이썬 서버 소스코드 보기. [예시] 전체: mode='full' / 찾기: mode='extract', target='단어', before=0, after=0, case_sensitive=false, occurrence=0",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "enum": ["full", "extract"], "default": "full"},
-                    "target": {"type": "string", "description": "extract 모드에서 검색할 키워드"},
-                    "lines_before": {"type": "number", "default": 3},
-                    "lines_after": {"type": "number", "default": 3},
-                    "case_sensitive": {"type": "boolean", "default": False},
-                    "occurrence": {"type": "number", "default": 0}
+                    "mode": {"type": "string", "enum": ["full", "extract"], "default": "full", "description": "'full'=전체코드, 'extract'=키워드찾기"},
+                    "target": {"type": "string", "description": "찾을 단어 (예: 'execute_tool', 'def ', 'send_message') mode='extract'일 때 필수"},
+                    "lines_before": {"type": "number", "default": 3, "description": "찾은 줄 위 추가 줄 수 (0=딱 그 줄만)"},
+                    "lines_after": {"type": "number", "default": 3, "description": "찾은 줄 아래 추가 줄 수 (0=딱 그 줄만)"},
+                    "case_sensitive": {"type": "boolean", "default": False, "description": "true=대소문자 구분, false=무시"},
+                    "occurrence": {"type": "number", "default": 0, "description": "0=첫번째, 1=두번째, 2=세번째... (같은 단어 여러 개)"}
                 },
-                "required": []
+                "required": ["mode", "target"]
             }
         }
     },
@@ -100,18 +100,18 @@ my_tools = [
         "type": "function",
         "function": {
             "name": "read_html_source",
-            "description": "Reads the HTML source code of the frontend. Use this when you need to see the HTML/CSS/JS code. Supports 'full' mode for entire source and 'extract' mode for keyword-based searching.",
+            "description": "HTML 소스코드 보기. [예시] 전체: mode='full' / 찾기: mode='extract', target='단어', before=0, after=0, case_sensitive=false, occurrence=0",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "enum": ["full", "extract"], "default": "full"},
-                    "target": {"type": "string", "description": "extract 모드에서 검색할 키워드"},
-                    "lines_before": {"type": "number", "default": 3},
-                    "lines_after": {"type": "number", "default": 3},
-                    "case_sensitive": {"type": "boolean", "default": False},
-                    "occurrence": {"type": "number", "default": 0}
+                    "mode": {"type": "string", "enum": ["full", "extract"], "default": "full", "description": "'full'=전체 HTML, 'extract'=키워드찾기"},
+                    "target": {"type": "string", "description": "찾을 단어 (예: 'send', 'button', 'function') mode='extract'일 때 필수"},
+                    "lines_before": {"type": "number", "default": 3, "description": "찾은 줄 위 추가 줄 수 (0=딱 그 줄만)"},
+                    "lines_after": {"type": "number", "default": 3, "description": "찾은 줄 아래 추가 줄 수 (0=딱 그 줄만)"},
+                    "case_sensitive": {"type": "boolean", "default": False, "description": "true=대소문자 구분, false=무시"},
+                    "occurrence": {"type": "number", "default": 0, "description": "0=첫번째, 1=두번째, 2=세번째... (같은 단어 여러 개)"}
                 },
-                "required": []
+                "required": ["mode", "target"]
             }
         }
     },
