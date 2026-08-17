@@ -476,7 +476,7 @@ def chat_completions():
         if not sys_prompt:
             sys_prompt = f"너 이름은 '{current_target}'이고 반말해."
         
-        max_history = 16000
+        max_history = max_tokens
         sys_token = len(sys_prompt)
         
         total_token = sys_token
