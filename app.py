@@ -490,150 +490,135 @@ def chat_completions():
             else:
                 break
         
-        def generate():
-            nonlocal api_key, provider, model, max_tokens, packed_messages, html_source
-            
-            try:
-                response = call_ai_stream(api_key, provider, model, max_tokens, packed_messages, my_tools)
-                
-                full_content = ""
-                full_reasoning = ""
-                tool_calls_acc = []
-                
-                for line in response:
-                    line = line.decode("utf-8", errors="replace").strip()
-                    if not line or line.startswith(":"):
-                        continue
-                    if line == "data: [DONE]":
-                        break
-                    
-                    if line.startswith("data: "):
-                        json_str = line[6:]
-                        try:
-                            parsed = json.loads(json_str)
-                            choices = parsed.get("choices", [])
-                            if not choices:
-                                continue
-                            
-                            choice = choices[0]
-                            delta = choice.get("delta", {})
-                            if not delta:
-                                continue
-                            
-                            reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content") or ""
-                            if reasoning_chunk:
-                                full_reasoning += reasoning_chunk
-                            
-                            content_chunk = delta.get("content", "")
-                            if content_chunk:
-                                full_content += content_chunk
-                            
-                            tool_calls = delta.get("tool_calls", [])
-                            if tool_calls:
-                                for tc in tool_calls:
-                                    idx = tc.get("index", 0)
-                                    if idx >= len(tool_calls_acc):
-                                        tool_calls_acc.append({
-                                            "id": tc.get("id", ""),
-                                            "type": tc.get("type", "function"),
-                                            "function": {"name": "", "arguments": ""}
-                                        })
-                                    if tc.get("id"):
-                                        tool_calls_acc[idx]["id"] = tc["id"]
-                                    if tc.get("function"):
-                                        if tc["function"].get("name"):
-                                            tool_calls_acc[idx]["function"]["name"] = tc["function"]["name"]
-                                        if tc["function"].get("arguments"):
-                                            tool_calls_acc[idx]["function"]["arguments"] += tc["function"]["arguments"]
-                            
-                            yield f"data: {json_str}\n\n"
-                            
-                        except json.JSONDecodeError:
-                            pass
-                
-                if tool_calls_acc and provider != "cerebras":
-                    tool_call = tool_calls_acc[0]
-                    tool_name = tool_call["function"]["name"]
-                    
-                    tool_args = {}
-                    try:
-                        tool_args = json.loads(tool_call["function"]["arguments"])
-                    except:
-                        pass
-                    
-                    yield f"data: {json.dumps({'choices': [{'delta': {'content': f'🛠️ AI가 도구를 호출합니다: [{tool_name}]\\n'}, 'finish_reason': None}]})}\n\n"
-                    
-                    tool_result = execute_tool(tool_name, tool_args, html_source)
-                    
-                    tool_messages = list(packed_messages)
-                    tool_messages.append({
-                        "role": "assistant",
-                        "tool_calls": tool_calls_acc
-                    })
-                    tool_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": tool_result
-                    })
-                    
-                    yield f"data: {json.dumps({'choices': [{'delta': {'content': '🔍 도구 실행 결과를 분석 중...\\n'}, 'finish_reason': None}]})}\n\n"
-                    
-                    try:
-                        response2 = call_ai_stream(api_key, provider, model, max_tokens, tool_messages, [])
-                        
-                        for line2 in response2:
-                            line2 = line2.decode("utf-8", errors="replace").strip()
-                            if not line2 or line2.startswith(":") or line2 == "data: [DONE]":
-                                continue
-                            if line2.startswith("data: "):
-                                yield f"{line2}\n\n"
-                    
-                    except Exception as e2:
-                        yield f"data: {json.dumps({'choices': [{'delta': {'content': f'에러: {str(e2)}'}, 'finish_reason': 'stop'}]})}\n\n"
-                
-                yield "data: [DONE]\n\n"
-                
-                if full_content:
-                    global messages
-                    if user_messages:
-                        user_msg_content = user_messages[-1].get("content", "") if user_messages else ""
-                        messages.append({"role": "user", "content": user_msg_content})
-                    
-                    reasoning_match = re.search(r'<(think|thought|thinking)>(.*?)</\1>', full_content, re.I | re.DOTALL)
-                    final_reasoning = full_reasoning
-                    final_content = full_content
-                    if reasoning_match:
-                        final_reasoning = reasoning_match.group(2).strip()
-                        final_content = re.sub(r'<(think|thought|thinking)>.*?</\1>', '', full_content, flags=re.I | re.DOTALL).strip()
-                    
-                    messages.append({
-                        "role": "assistant",
-                        "content": final_content,
-                        "reasoning": final_reasoning,
-                        "name": current_target
-                    })
-                    
-                    if len(messages) > 50:
-                        messages = messages[-50:]
-                    save_history(messages)
-                
-            except Exception as e:
-                yield f"data: {json.dumps({'choices': [{'delta': {'content': f'에러: {str(e)}\n{traceback.format_exc()}'}, 'finish_reason': 'stop'}]})}\n\n"
-                yield "data: [DONE]\n\n"
-        
-        return Response(
-            stream_with_context(generate()),
-            mimetype="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive"
-            }
-        )
+def generate():
+    nonlocal api_key, provider, model, max_tokens, packed_messages, html_source
     
+    try:
+        # 현재 메시지 리스트
+        current_messages = list(packed_messages)
+        
+        # 최대 도구 호출 횟수 (무한 루프 방지)
+        max_tool_rounds = 10
+        tool_round = 0
+        
+        while tool_round < max_tool_rounds:
+            tool_round += 1
+            
+            # AI 호출 (도구 사용 가능하게 my_tools 넘김)
+            response = call_ai_stream(api_key, provider, model, max_tokens, current_messages, my_tools)
+            
+            full_content = ""
+            full_reasoning = ""
+            tool_calls_acc = []
+            finish_reason = None
+            
+            for line in response:
+                line = line.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                if line == "data: [DONE]":
+                    break
+                
+                if line.startswith("data: "):
+                    json_str = line[6:]
+                    try:
+                        parsed = json.loads(json_str)
+                        choices = parsed.get("choices", [])
+                        if not choices:
+                            continue
+                        
+                        choice = choices[0]
+                        delta = choice.get("delta", {})
+                        if not delta:
+                            continue
+                        
+                        # finish_reason 저장
+                        if choice.get("finish_reason"):
+                            finish_reason = choice.get("finish_reason")
+                        
+                        reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                        if reasoning_chunk:
+                            full_reasoning += reasoning_chunk
+                        
+                        content_chunk = delta.get("content", "")
+                        if content_chunk:
+                            full_content += content_chunk
+                        
+                        tool_calls = delta.get("tool_calls", [])
+                        if tool_calls:
+                            for tc in tool_calls:
+                                idx = tc.get("index", 0)
+                                if idx >= len(tool_calls_acc):
+                                    tool_calls_acc.append({
+                                        "id": tc.get("id", ""),
+                                        "type": tc.get("type", "function"),
+                                        "function": {"name": "", "arguments": ""}
+                                    })
+                                if tc.get("id"):
+                                    tool_calls_acc[idx]["id"] = tc["id"]
+                                if tc.get("function"):
+                                    if tc["function"].get("name"):
+                                        tool_calls_acc[idx]["function"]["name"] = tc["function"]["name"]
+                                    if tc["function"].get("arguments"):
+                                        tool_calls_acc[idx]["function"]["arguments"] += tc["function"]["arguments"]
+                        
+                        yield f"data: {json_str}\n\n"
+                        
+                    except json.JSONDecodeError:
+                        pass
+            
+            # 도구 호출이 없거나 cerebras면 종료
+            if not tool_calls_acc or provider == "cerebras":
+                break
+            
+            # ---- 도구 실행부 ----
+            tool_messages_content = []
+            
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': f'\\n🛠️ AI가 도구를 호출합니다: {[tc[\"function\"][\"name\"] for tc in tool_calls_acc]}\\n'}, 'finish_reason': None}]})}\n\n"
+            
+            # 모든 도구 호출 실행
+            for tc in tool_calls_acc:
+                tool_name = tc["function"]["name"]
+                tool_args = {}
+                try:
+                    tool_args = json.loads(tc["function"]["arguments"])
+                except:
+                    pass
+                
+                yield f"data: {json.dumps({'choices': [{'delta': {'content': f'  ▶ 실행: {tool_name}({json.dumps(tool_args)[:100]})\\n'}, 'finish_reason': None}]})}\n\n"
+                
+                tool_result = execute_tool(tool_name, tool_args, html_source)
+                
+                tool_messages_content.append({
+                    "tool_call_id": tc["id"],
+                    "content": tool_result
+                })
+                
+                yield f"data: {json.dumps({'choices': [{'delta': {'content': f'  ✅ {tool_name} 완료\\n'}, 'finish_reason': None}]})}\n\n"
+            
+            # assistant 메시지 저장
+            current_messages.append({
+                "role": "assistant",
+                "content": full_content or None,
+                "tool_calls": tool_calls_acc
+            })
+            
+            # tool 응답 메시지들 저장
+            for tmc in tool_messages_content:
+                current_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tmc["tool_call_id"],
+                    "content": tmc["content"]
+                })
+            
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': '🔄 도구 결과 분석 중... 다시 AI 호출\\n'}, 'finish_reason': None}]})}\n\n"
+        
+        # 마지막 [DONE] 시그널
+        yield f"data: [DONE]\n\n"
+        
     except Exception as e:
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
-
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': f'❌ 에러: {str(e)}'}, 'finish_reason': 'stop'}]})}\n\n"
+        yield f"data: [DONE]\n\n"
 
 # ──────────────────────────────────────────────
 # 7. 명령어 처리 (***)
