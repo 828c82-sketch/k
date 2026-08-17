@@ -494,17 +494,13 @@ def generate():
     nonlocal api_key, provider, model, max_tokens, packed_messages, html_source
     
     try:
-        # 현재 메시지 리스트
         current_messages = list(packed_messages)
-        
-        # 최대 도구 호출 횟수 (무한 루프 방지)
         max_tool_rounds = 10
         tool_round = 0
         
         while tool_round < max_tool_rounds:
             tool_round += 1
             
-            # AI 호출 (도구 사용 가능하게 my_tools 넘김)
             response = call_ai_stream(api_key, provider, model, max_tokens, current_messages, my_tools)
             
             full_content = ""
@@ -532,7 +528,6 @@ def generate():
                         if not delta:
                             continue
                         
-                        # finish_reason 저장
                         if choice.get("finish_reason"):
                             finish_reason = choice.get("finish_reason")
                         
@@ -567,16 +562,14 @@ def generate():
                     except json.JSONDecodeError:
                         pass
             
-            # 도구 호출이 없거나 cerebras면 종료
             if not tool_calls_acc or provider == "cerebras":
                 break
             
-            # ---- 도구 실행부 ----
+            # 도구 실행
             tool_messages_content = []
             
             yield f"data: {json.dumps({'choices': [{'delta': {'content': f'\\n🛠️ AI가 도구를 호출합니다: {[tc[\"function\"][\"name\"] for tc in tool_calls_acc]}\\n'}, 'finish_reason': None}]})}\n\n"
             
-            # 모든 도구 호출 실행
             for tc in tool_calls_acc:
                 tool_name = tc["function"]["name"]
                 tool_args = {}
@@ -585,25 +578,19 @@ def generate():
                 except:
                     pass
                 
-                yield f"data: {json.dumps({'choices': [{'delta': {'content': f'  ▶ 실행: {tool_name}({json.dumps(tool_args)[:100]})\\n'}, 'finish_reason': None}]})}\n\n"
-                
                 tool_result = execute_tool(tool_name, tool_args, html_source)
                 
                 tool_messages_content.append({
                     "tool_call_id": tc["id"],
                     "content": tool_result
                 })
-                
-                yield f"data: {json.dumps({'choices': [{'delta': {'content': f'  ✅ {tool_name} 완료\\n'}, 'finish_reason': None}]})}\n\n"
             
-            # assistant 메시지 저장
             current_messages.append({
                 "role": "assistant",
-                "content": full_content or None,
+                "content": full_content if full_content else None,
                 "tool_calls": tool_calls_acc
             })
             
-            # tool 응답 메시지들 저장
             for tmc in tool_messages_content:
                 current_messages.append({
                     "role": "tool",
@@ -611,14 +598,12 @@ def generate():
                     "content": tmc["content"]
                 })
             
-            yield f"data: {json.dumps({'choices': [{'delta': {'content': '🔄 도구 결과 분석 중... 다시 AI 호출\\n'}, 'finish_reason': None}]})}\n\n"
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': '🔄 도구 결과 분석 중...\\n'}, 'finish_reason': None}]})}\n\n"
         
-        # 마지막 [DONE] 시그널
-        yield f"data: [DONE]\n\n"
+        # [DONE]은 원래 안 보내니까 생략 (프론트엔드가 알아서 처리)
         
     except Exception as e:
         yield f"data: {json.dumps({'choices': [{'delta': {'content': f'❌ 에러: {str(e)}'}, 'finish_reason': 'stop'}]})}\n\n"
-        yield f"data: [DONE]\n\n"
 
 # ──────────────────────────────────────────────
 # 7. 명령어 처리 (***)
