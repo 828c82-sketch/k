@@ -182,7 +182,7 @@ async def websocket_handler(request):
 
 async def index(request):
     with open("index.html", "r", encoding="utf-8") as f:
-        return web.Response(text=f.read(), content_type="text/html; charset=utf-8")
+        return web.Response(text=f.read(), content_type="text/html", charset="utf-8") # 👈 요렇게 분리!
 
 app = web.Application()
 app.router.add_get("/", index)
