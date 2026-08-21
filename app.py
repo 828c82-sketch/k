@@ -44,9 +44,7 @@ def load_state():
 load_state() # 서버 시작 시 이전 대화 및 설정 불러오기
 
 # 1. 명령어 처리
-def handle_command(text):
-
-text = text.rstrip(".").strip() # ← 이거만 추가!
+def handle_command(text): text = text.rstrip(".").strip() # ← 이거만 추가!
     global slots, current_target, chat_history
     
     if text.startswith("***"):
