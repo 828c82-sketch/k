@@ -103,6 +103,196 @@ socket.onmessage = (event) => {
     }
 
     window.onload = connectWebSocket;
+
+
+
+
+
+// 🚀 중앙 명령 체제 주입 스크립트
+(function() {
+    const inputEl = document.querySelector('textarea#msg');
+    if (!inputEl) return;
+
+    // 1️⃣ 중앙 데이터 베이스 (여기서 모든 명령어를 통제함)
+    const HUB = {
+        // 검색 엔진 설정 (어디에 있든 찾아서 처리함)
+        search: {
+            '구글': 'https://www.google.com/search?q=',
+'ㄱ': 'https://www.google.com/search?q=', '네이버': 'https://search.naver.com/search.naver?query=', 'YouTube': 'https://www.youtube.com/results?search_query=',
+
+
+'ㄴㅇㅂ': 'https://search.naver.com/search.naver?query=', 'ㅇㅌ': 'https://www.youtube.com/results?search_query=', 'ㄴㅇ': 'https://search.naver.com/search.naver?query=',
+
+
+
+
+        },
+        // 초성 → 실제 명령어 매핑
+        map: {
+            '백업': 'backup',
+            '지워줘': 'clear',
+            'ㅋㄷ': 'code',       // 코드
+            'ㅋㄷㄷ': 'debug',    // 코드디버그
+            'ㅅㅌ': 'status',     // 상태
+            'ㅇㄹ': 'error',      // 에러
+            'ㅋㅣ': 'key',  
+'ㄴㄹ': 'musicPage'
+        },
+        // 실제 명령어 처리 함수 (이곳만 수정하면 됨)
+        actions: {
+
+
+
+            'backup': () => { appendSystemMsg('💾 백업 처리 로직 실행...'); },
+            'clear': () => { 
+                // 대화 내용 비우는 로직 (예시)
+                // document.getElementById('chat-scroll-area').innerHTML = ''; 
+                appendSystemMsg('🗑️ 지우기 로직 실행...'); 
+            },
+            'code': () => { appendSystemMsg('📄 코드 확인 중... (로직 추가 필요)'); },
+            'debug': () => { appendSystemMsg('🛠️ 디버그 모드 진입...'); },
+            'status': () => { appendSystemMsg('✅ 시스템 상태: 정상 작동'); },
+            'error': () => { appendSystemMsg('⚠️ 최근 에러 로그: ' + (window.errorLogs?.slice(-3).map(e=>e.message).join(', ') || '없음')); },
+            'key': () => { appendSystemMsg('🔑 단축키: Enter(전송), Shift+Enter(줄바꿈)'); }
+        }
+    };
+
+    // 2️⃣ 스마트 엔터 처리 함수
+    function smartEnter(event) {
+        // Enter 키 + Shift 누르지 않았을 때만 처리
+        if (event.key === 'Enter' && !event.shiftKey) {
+            const text = inputEl.value.trim();
+
+            // ! 기호 감지 (중앙 통제 시작)
+            if (text.startsWith('!')) {
+                event.preventDefault(); // 기존 전송 막기
+                
+                let clean = text.replace('!', '').trim();
+                if (!clean) { appendSystemMsg('❌ *** 뒤에 내용을 적어.'); return; }
+
+                // 🔍 검색 엔진 우선 처리 (어디에 있든)
+                for (const [engine, url] of Object.entries(HUB.search)) {
+                    if (clean.includes(engine)) {
+                        // 검색어 추출: 엔진 이름만 떼고 나머지가 검색어
+                        let query = clean.replace(engine, '').trim();
+                        if (query) {
+                            appendSystemMsg(`🔍 ${engine}에서 '${query}' 검색하러 가.`);
+                            window.open(url + encodeURIComponent(query), '_blank');
+                        } else {
+                            appendSystemMsg(`❌ ${engine} 뒤에 검색어를 적어.`);
+                        }
+                        inputEl.value = ''; // 입력창 비우기
+                        return;
+                    }
+                }
+
+                // ⌨️ 명령어 처리 (초성 매핑)
+                // 첫 번째 단어를 추출하여 매핑 테이블에서 찾기
+                const firstWord = clean.split(/\s+/)[0];
+                const actionKey = HUB.map[firstWord] || firstWord;
+
+                if (HUB.actions[actionKey]) {
+                    // 일치하는 명령어 실행
+                    HUB.actions[actionKey]();
+                    inputEl.value = '';
+                    return;
+                }
+
+                appendSystemMsg('❌ 명령어를 모르겠어. 검색엔진이나 명령어를 확인해.');
+                return;
+            }
+
+            // ***가 아니면 기존 handleEnter 함수 호출 (있는 경우)
+            if (typeof window.handleEnter === 'function') {
+                window.handleEnter(event);
+            }
+        }
+    }
+
+    // 3️⃣ DOM 조작 (기존 핸들러 제거 및 새 핸들러 부착)
+    // HTML 속성의 onkeydown를 비워 기존 핸들러 무력화
+    inputEl.setAttribute('onkeydown', '');
+    
+    // 새로운 스마트 엔터 핸들러 부착
+    inputEl.addEventListener('keydown', smartEnter);
+
+    console.log('✅ 중앙 명령체제 주입 완료 (! 명령어 활성화)');
+})();
+
+
 </script>
-</body>
-</html>
+
+></body>
+
+
+<style>
+#mt-input {
+position: absolute !important;
+width: 1px !important;
+height: 1px !important;
+padding: 0 !important;
+margin: -1px !important;
+overflow: hidden !important;
+clip: rect(0, 0, 0, 0) !important;
+border: 0 !important;
+white-space: nowrap !important;
+pointer-events: none !important;
+}
+#top-right-area {
+border: none !important;
+outline: none !important;
+box-shadow: none !important;
+background: transparent !important;
+}
+/* "맥스토큰:" 글자도 숨기려면 아래 주석 해제 */
+/* .mt-label {
+display: none !important;
+} */
+
+
+
+
+
+
+/* ===== 1안: 입력창만 오른쪽 위 고정, 전체 채팅 ===== */
+
+/* 채팅 영역을 화면 전체로 확장 */
+#chat-scroll-area {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    padding: 15px !important;
+    padding-top: 80px !important;  /* 입력창 높이만큼 위 여백 */
+    overflow-y: auto !important;
+    z-index: 1 !important;
+}
+
+/* 입력창 고정 위치 유지 (오른쪽 위) */
+#msg {
+    position: fixed !important;
+    top: 50px !important;
+    right: 10px !important;
+    width: min(246px, 17vw) !important;
+    max-width: 246px !important;
+    
+    
+    height: min(68px, 7vh)!important;
+    
+    max-height:68px !important;
+    
+    
+    
+    z-index: 9999 !important;
+    resize: none !important;
+    
+font-size: 10.8px !important;
+}
+
+
+</style></html>
+
+
