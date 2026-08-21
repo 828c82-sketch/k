@@ -84,7 +84,7 @@ def handle_command(text):
         s = slots[slot_name]
         return f"✅ [{slot_name}] 설정 완료! (제공업체: {s['provider']}, 키: {s['apiKey'][:8]}...)"
 
-    if "청소해" in text or "지워줘" in text:
+    if "지워줘" in text:
         chat_history.clear()
         save_state()
         return "🗑️ 대화 기록을 지웠습니다."
