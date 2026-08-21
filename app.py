@@ -4,16 +4,55 @@ import asyncio
 import aiohttp
 from aiohttp import web
 
+# ==============================================================================
+# [공통 통신 규격 및 구조 정의 (Architecture & Protocol)]
+# ==============================================================================
+# 1. 파일 구조:
+#    - 프론트엔드: index.html (UI, WebSocket 이벤트 수신 및 전송)
+#    - 백엔드: app.py (FastAPI/Aiohttp 기반 서버, 데이터 저장, AI 호출, 도구 실행)
+# 2. WebSocket 통신 프로토콜 (JSON 포맷):
+#    - Client -> Server:
+#        * {"type": "user_input", "content": "메시지"}
+#        * {"type": "update_setting", "maxTokens": 4096}
+#    - Server -> Client:
+#        * {"type": "stream_chunk", "content": "텍스트 조각"}
+#        * {"type": "system", "content": "시스템 알림 메시지"}
+#        * {"type": "done", "content": ""}
+# ==============================================================================
+
+STATE_FILE = "server_state.json"
+
+# 상태 저장/복구 기능 (파이썬 내부 처리)
+def save_state():
+    try:
+        data = {"slots": slots, "chat_history": chat_history, "current_target": current_target}
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"State save error: {e}")
+
+def load_state():
+    global slots, chat_history, current_target
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                slots = data.get("slots", slots)
+                chat_history = data.get("chat_history", chat_history)
+                current_target = data.get("current_target", current_target)
+        except Exception as e:
+            print(f"State load error: {e}")
+
 chat_history = []
 current_target = "호"
-
 slots = {
     "호": {"provider": "groq", "apiKey": "", "model": "llama-3.3-70b-versatile", "sysPrompt": "", "maxTokens": 4096},
     "탱탱": {"provider": "groq", "apiKey": "", "model": "qwen/qwen3.6-27b", "sysPrompt": "", "maxTokens": 4096}
 }
 
+load_state() # 서버 시작 시 이전 대화 및 설정 복구
+
 # 1. 명령어 처리
-# 1. 명령어 처리 (오타 수정완료)
 def handle_command(text):
     global slots, current_target, chat_history
     
@@ -33,7 +72,6 @@ def handle_command(text):
             return f"ℹ️ [{slot_name}] 현재 설정:\n- 제공업체: {s.get('provider')}\n- 모델: {s['model']}\n- 키: {'등록됨' if s['apiKey'] else '없음'}\n- 토큰: {s['maxTokens']}"
         
         for t in rest:
-            # 키 접두사별 제공업체 자동 판별
             if t.startswith("gsk_"):
                 slots[slot_name]["apiKey"] = t
                 slots[slot_name]["provider"] = "groq"
@@ -45,33 +83,65 @@ def handle_command(text):
                 slots[slot_name]["provider"] = "deepinfra"
             elif t.isdigit():
                 slots[slot_name]["maxTokens"] = int(t)
-            elif "/" in t: # 모델명 지정
+            elif "/" in t:
                 slots[slot_name]["model"] = t
             else:
                 slots[slot_name]["sysPrompt"] = t
 
+        save_state()
         s = slots[slot_name]
-        return f"✅ [{slot_name}] 설정 완료! (제공업체: {s['provider']}, 키: {s['apiKey'][:8]}...)" # 👈 여기 s_name을 slot_name으로 고쳤어!
+        return f"✅ [{slot_name}] 설정 완료! (제공업체: {s['provider']}, 키: {s['apiKey'][:8]}...)"
 
     if "청소해" in text or "지워줘" in text:
         chat_history.clear()
+        save_state()
         return "🗑️ 대화 기록을 지웠습니다."
     
     return None
 
-# 2. 도구 실행
+# 2. 고급 코드 진단 도구 (키워드/라인 범위 검색 지원)
 async def execute_tool(tool_name, args):
-    if tool_name == "tavily_search":
-        return f"[검색 결과] '{args.get('query')}' 관련 정보 수집 완료"
-    elif tool_name == "get_app_diagnostics":
+    if tool_name == "get_app_diagnostics":
+        filename = args.get("filename", "index.html") # "index.html" 또는 "app.py"
+        keyword = args.get("keyword")
+        context_lines = args.get("context_lines", 5)
+
+        target_file = "app.py" if filename in ["app.py", "python", "backend"] else "index.html"
+
         try:
-            with open("index.html", "r", encoding="utf-8") as f:
-                return json.dumps({"source_code": f.read()})
+            if not os.path.exists(target_file):
+                return json.dumps({"error": f"파일 '{target_file}'을 찾을 수 없습니다."})
+
+            with open(target_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            # 특정 키워드가 지정된 경우: 해당 위치 주변 앞뒤 N줄만 추출
+            if keyword:
+                matched_results = []
+                for idx, line in enumerate(lines):
+                    if keyword.lower() in line.lower():
+                        start = max(0, idx - context_lines)
+                        end = min(len(lines), idx + context_lines + 1)
+                        snippet = "".join(lines[start:end])
+                        matched_results.append(f"--- [Line {start+1} ~ {end}] (키워드: '{keyword}') ---\n{snippet}")
+                
+                if matched_results:
+                    return json.dumps({"file": target_file, "results": matched_results}, ensure_ascii=False)
+                else:
+                    return json.dumps({"file": target_file, "result": f"키워드 '{keyword}'를 찾지 못했습니다."}, ensure_ascii=False)
+
+            # 키워드가 없으면 전체 소스코드 반환
+            return json.dumps({"file": target_file, "source_code": "".join(lines)}, ensure_ascii=False)
+
         except Exception as e:
             return json.dumps({"error": str(e)})
+
+    elif tool_name == "tavily_search":
+        return f"[검색 결과] '{args.get('query')}' 관련 정보 수집 완료"
+    
     return "알 수 없는 도구 요청입니다."
 
-# 3. AI 호출 및 스트리밍 (도구 피드백 루프 포함)
+# 3. AI 호출 및 스트리밍
 async def process_chat(ws, user_msg):
     global chat_history, slots, current_target
     
@@ -83,7 +153,6 @@ async def process_chat(ws, user_msg):
         await ws.send_json({"type": "system", "content": f"⚠️ [{current_target}]의 API 키가 없습니다."})
         return
 
-# Provider별 API 주소 전체 세팅
     provider_urls = {
         "groq": "https://api.groq.com/openai/v1/chat/completions",
         "openrouter": "https://openrouter.ai/api/v1/chat/completions",
@@ -94,13 +163,40 @@ async def process_chat(ws, user_msg):
     url = provider_urls.get(active_slot.get("provider", "groq"))
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {active_slot['apiKey']}"}
     
-    sys_prompt = active_slot.get("sysPrompt") or f"Feel free to use tools sequentially as many times as needed in a single turn. 너 이름은 '{current_target}'이고 무조건 반말해."
-    
+    sys_prompt = active_slot.get("sysPrompt") or f"너 이름은 '{current_target}'이고 무조건 반말해. 필요시 get_app_diagnostics 도구를 사용해 소스코드를 직접 점검해라."
     messages = [{"role": "system", "content": sys_prompt}] + chat_history + [{"role": "user", "content": user_msg}]
     
+    # AI에게 전달할 도구 정의
     tools = [
-        {"type": "function", "function": {"name": "tavily_search", "description": "실시간 검색", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}},
-        {"type": "function", "function": {"name": "get_app_diagnostics", "description": "현재 HTML 소스코드 진단 및 검토", "parameters": {"type": "object", "properties": {"mode": {"type": "string"}}}}}
+        {
+            "type": "function",
+            "function": {
+                "name": "get_app_diagnostics",
+                "description": "HTML(index.html) 또는 Python(app.py) 소스코드를 검토합니다. 특정 키워드 주변만 조율해서 읽을 수 있습니다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "읽을 파일 ('index.html' 또는 'app.py')"},
+                        "keyword": {"type": "string", "description": "찾을 특정 키워드/함수명 (선택사항)"},
+                        "context_lines": {"type": "integer", "description": "키워드 앞뒤로 읽을 줄 수 (기본값: 5)"}
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "tavily_search",
+                "description": "실시간 인터넷 검색",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "검색어"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        }
     ]
 
     async with aiohttp.ClientSession() as session:
@@ -128,7 +224,10 @@ async def process_chat(ws, user_msg):
                         if data_str == "[DONE]": break
                         try:
                             data = json.loads(data_str)
-                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            choices = data.get("choices", [])
+                            if not choices: continue
+                            
+                            delta = choices[0].get("delta", {})
                             
                             if delta.get("content"):
                                 chunk = delta["content"]
@@ -143,9 +242,9 @@ async def process_chat(ws, user_msg):
                                     if tc.get("id"): tool_calls[idx]["id"] = tc["id"]
                                     if tc.get("function", {}).get("name"): tool_calls[idx]["function"]["name"] = tc["function"]["name"]
                                     if tc.get("function", {}).get("arguments"): tool_calls[idx]["function"]["arguments"] += tc["function"]["arguments"]
-                        except json.JSONDecodeError: pass
+                        except Exception: pass
 
-                # 도구 요청이 들어온 경우: 실행 후 AI에 결과값 넘겨주고 재호출
+                # 도구 실행 요청이 온 경우
                 if tool_calls:
                     assistant_msg = {"role": "assistant", "content": full_content or None, "tool_calls": []}
                     for tc in tool_calls:
@@ -158,18 +257,19 @@ async def process_chat(ws, user_msg):
                     for tc in tool_calls:
                         name = tc["function"]["name"]
                         args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
-                        await ws.send_json({"type": "system", "content": f"🛠️ 도구 실행 중: [{name}]"})
+                        await ws.send_json({"type": "system", "content": f"🛠️ 도구 실행: [{name}]"})
                         res = await execute_tool(name, args)
                         messages.append({"role": "tool", "tool_call_id": tc["id"], "content": res})
-                    continue # 결과를 들고 다시 AI에 요청
-                
-                # 도구 호출 없이 최종 답변이 끝난 경우
+                    continue
+
+                # 정상 대화 종료
                 chat_history.append({"role": "user", "content": user_msg})
                 if full_content: chat_history.append({"role": "assistant", "content": full_content})
+                save_state() # 대화 종료 시 자동 저장
                 await ws.send_json({"type": "done", "content": ""})
                 break
 
-# 4. WebSocket 서버 설정
+# 4. WebSocket 처리
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -187,13 +287,14 @@ async def websocket_handler(request):
                 elif data.get("type") == "update_setting":
                     if "maxTokens" in data:
                         for s in slots: slots[s]["maxTokens"] = data["maxTokens"]
+                        save_state()
             except Exception as e:
                 await ws.send_json({"type": "system", "content": f"Error: {str(e)}"})
     return ws
 
 async def index(request):
     with open("index.html", "r", encoding="utf-8") as f:
-        return web.Response(text=f.read(), content_type="text/html", charset="utf-8") # 👈 요렇게 분리!
+        return web.Response(text=f.read(), content_type="text/html", charset="utf-8")
 
 app = web.Application()
 app.router.add_get("/", index)
