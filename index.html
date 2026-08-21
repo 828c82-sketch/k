@@ -59,9 +59,12 @@
         socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
         socket.onopen = () => appendSystemMsg("✅ Python 서버 연결됨");
-        socket.onmessage = (event) => {
+socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            if (data.type === "stream_chunk") {
+            // 👇 [여기 3줄 추가됨!] 서버에서 보내주는 이전 대화 불러와서 화면에 그리기
+            if (data.type === "init_history") {
+                appendMessageDOM(data.role, data.content);
+            } else if (data.type === "stream_chunk") {
                 let lastAi = chatContainer.querySelector('.ai-box:last-child');
                 if (!lastAi || lastAi.dataset.done === "true") {
                     lastAi = document.createElement('div');
@@ -77,6 +80,8 @@
                 if (lastAi) lastAi.dataset.done = "true";
             }
         };
+
+
         socket.onclose = () => setTimeout(connectWebSocket, 3000);
     }
 
