@@ -5,24 +5,22 @@ import aiohttp
 from aiohttp import web
 
 # ==============================================================================
-# [공통 통신 규격 및 구조 정의 (Architecture & Protocol)]
+# [공통 통신 규격 및 구조 정의]
 # ==============================================================================
-# 1. 파일 구조:
-#    - 프론트엔드: index.html (UI, WebSocket 이벤트 수신 및 전송)
-#    - 백엔드: app.py (FastAPI/Aiohttp 기반 서버, 데이터 저장, AI 호출, 도구 실행)
-# 2. WebSocket 통신 프로토콜 (JSON 포맷):
-#    - Client -> Server:
-#        * {"type": "user_input", "content": "메시지"}
-#        * {"type": "update_setting", "maxTokens": 4096}
-#    - Server -> Client:
-#        * {"type": "stream_chunk", "content": "텍스트 조각"}
-#        * {"type": "system", "content": "시스템 알림 메시지"}
-#        * {"type": "done", "content": ""}
+# - 프론트엔드: index.html
+# - 백엔드: app.py (WebSocket 기반, 자동 저장 & 이전 대화 복원 기능 탑재)
 # ==============================================================================
 
 STATE_FILE = "server_state.json"
 
-# 상태 저장/복구 기능 (파이썬 내부 처리)
+chat_history = []
+current_target = "호"
+slots = {
+    "호": {"provider": "groq", "apiKey": "", "model": "llama-3.3-70b-versatile", "sysPrompt": "", "maxTokens": 4096},
+    "탱탱": {"provider": "groq", "apiKey": "", "model": "qwen/qwen3.6-27b", "sysPrompt": "", "maxTokens": 4096}
+}
+
+# 상태 저장/복구
 def save_state():
     try:
         data = {"slots": slots, "chat_history": chat_history, "current_target": current_target}
@@ -43,14 +41,7 @@ def load_state():
         except Exception as e:
             print(f"State load error: {e}")
 
-chat_history = []
-current_target = "호"
-slots = {
-    "호": {"provider": "groq", "apiKey": "", "model": "llama-3.3-70b-versatile", "sysPrompt": "", "maxTokens": 4096},
-    "탱탱": {"provider": "groq", "apiKey": "", "model": "qwen/qwen3.6-27b", "sysPrompt": "", "maxTokens": 4096}
-}
-
-load_state() # 서버 시작 시 이전 대화 및 설정 복구
+load_state() # 서버 시작 시 이전 대화 및 설정 불러오기
 
 # 1. 명령어 처리
 def handle_command(text):
@@ -99,10 +90,10 @@ def handle_command(text):
     
     return None
 
-# 2. 고급 코드 진단 도구 (키워드/라인 범위 검색 지원)
+# 2. 코드 진단 도구
 async def execute_tool(tool_name, args):
     if tool_name == "get_app_diagnostics":
-        filename = args.get("filename", "index.html") # "index.html" 또는 "app.py"
+        filename = args.get("filename", "index.html")
         keyword = args.get("keyword")
         context_lines = args.get("context_lines", 5)
 
@@ -115,7 +106,6 @@ async def execute_tool(tool_name, args):
             with open(target_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
-            # 특정 키워드가 지정된 경우: 해당 위치 주변 앞뒤 N줄만 추출
             if keyword:
                 matched_results = []
                 for idx, line in enumerate(lines):
@@ -130,7 +120,6 @@ async def execute_tool(tool_name, args):
                 else:
                     return json.dumps({"file": target_file, "result": f"키워드 '{keyword}'를 찾지 못했습니다."}, ensure_ascii=False)
 
-            # 키워드가 없으면 전체 소스코드 반환
             return json.dumps({"file": target_file, "source_code": "".join(lines)}, ensure_ascii=False)
 
         except Exception as e:
@@ -166,34 +155,19 @@ async def process_chat(ws, user_msg):
     sys_prompt = active_slot.get("sysPrompt") or f"너 이름은 '{current_target}'이고 무조건 반말해. 필요시 get_app_diagnostics 도구를 사용해 소스코드를 직접 점검해라."
     messages = [{"role": "system", "content": sys_prompt}] + chat_history + [{"role": "user", "content": user_msg}]
     
-    # AI에게 전달할 도구 정의
     tools = [
         {
             "type": "function",
             "function": {
                 "name": "get_app_diagnostics",
-                "description": "HTML(index.html) 또는 Python(app.py) 소스코드를 검토합니다. 특정 키워드 주변만 조율해서 읽을 수 있습니다.",
+                "description": "HTML(index.html) 또는 Python(app.py) 소스코드를 검토합니다.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "filename": {"type": "string", "description": "읽을 파일 ('index.html' 또는 'app.py')"},
-                        "keyword": {"type": "string", "description": "찾을 특정 키워드/함수명 (선택사항)"},
-                        "context_lines": {"type": "integer", "description": "키워드 앞뒤로 읽을 줄 수 (기본값: 5)"}
+                        "keyword": {"type": "string", "description": "찾을 특정 키워드"},
+                        "context_lines": {"type": "integer", "description": "키워드 앞뒤 줄 수"}
                     }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "tavily_search",
-                "description": "실시간 인터넷 검색",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "검색어"}
-                    },
-                    "required": ["query"]
                 }
             }
         }
@@ -228,7 +202,6 @@ async def process_chat(ws, user_msg):
                             if not choices: continue
                             
                             delta = choices[0].get("delta", {})
-                            
                             if delta.get("content"):
                                 chunk = delta["content"]
                                 full_content += chunk
@@ -244,7 +217,6 @@ async def process_chat(ws, user_msg):
                                     if tc.get("function", {}).get("arguments"): tool_calls[idx]["function"]["arguments"] += tc["function"]["arguments"]
                         except Exception: pass
 
-                # 도구 실행 요청이 온 경우
                 if tool_calls:
                     assistant_msg = {"role": "assistant", "content": full_content or None, "tool_calls": []}
                     for tc in tool_calls:
@@ -262,17 +234,25 @@ async def process_chat(ws, user_msg):
                         messages.append({"role": "tool", "tool_call_id": tc["id"], "content": res})
                     continue
 
-                # 정상 대화 종료
                 chat_history.append({"role": "user", "content": user_msg})
                 if full_content: chat_history.append({"role": "assistant", "content": full_content})
-                save_state() # 대화 종료 시 자동 저장
+                save_state()
                 await ws.send_json({"type": "done", "content": ""})
                 break
 
-# 4. WebSocket 처리
+# 4. WebSocket 핸들러 (접속 즉시 이전 대화 내역 화면으로 복원)
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
+    
+    # 🌟 핵심: 클라이언트가 연결되자마자 저장된 기존 대화 내역 뿌려주기
+    if chat_history:
+        for msg in chat_history:
+            if msg.get("role") == "user":
+                await ws.send_json({"type": "init_history", "role": "user", "content": msg["content"]})
+            elif msg.get("role") == "assistant" and msg.get("content"):
+                await ws.send_json({"type": "init_history", "role": "assistant", "content": msg["content"]})
+
     async for msg in ws:
         if msg.type == aiohttp.WSMsgType.TEXT:
             try:
