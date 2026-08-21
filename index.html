@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AMOLED ㅋㄷ창</title>
+    <style>
+        * { box-sizing: border-box; font-family: sans-serif; }
+        body { margin: 0; padding: 0; background: #000000; color: #ffffff; display: flex; flex-direction: column; height: 100vh; }
+        #top-right-area { position: fixed; top: 10px; right: 10px; width: min(220px, 30vw); max-width: 220px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; background: transparent !important; padding: 10px; border: none !important; }
+        .toggle-label, .mt-label { color: #888888; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+        #mt-input { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; border: 0 !important; white-space: nowrap !important; pointer-events: none !important; }
+        #chat-scroll-area { position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; width: 100% !important; height: 100% !important; padding: 15px !important; padding-top: 80px !important; overflow-y: auto !important; z-index: 1 !important; background: #000000; }
+        #msg { position: fixed !important; top: 50px !important; right: 10px !important; width: min(246px, 17vw) !important; max-width: 246px !important; height: min(68px, 7vh) !important; max-height: 68px !important; z-index: 9999 !important; resize: none !important; font-size: 10.8px !important; background: #000; color: #ccc; border: 1px solid #333; }
+        .user-box { font-size: 13px; color: #ffffff; margin: 15px 0; word-break: break-all; line-height: 1.4; }
+        .ai-box { font-size: 13px; color: #d4a359; margin: 15px 0 25px 0; word-break: break-all; line-height: 1.4; }
+        .system-box { font-size: 11px; color: #ff9800; margin: 10px 0; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <div id="top-right-area">
+        <label class="toggle-label"><input type="checkbox" id="reasoning-toggle">추론 표시</label>
+        <div class="mt-label"><span>맥스토큰:</span><input type="number" id="mt-input" value="4096" onchange="setGlobalMaxTokens(this.value)"></div>
+        <textarea id="msg" placeholder="질문 후 엔터(Enter) 전송..." onkeydown="handleEnter(event)"></textarea>
+    </div>
+    <div id="chat-scroll-area"></div>
+
+<script>
+    let socket;
+    const chatContainer = document.getElementById('chat-scroll-area');
+
+    function appendSafeTextNode(element, text) {
+        if (!text) return;
+        text.split('\n').forEach((p, i, arr) => {
+            element.appendChild(document.createTextNode(p));
+            if (i < arr.length - 1) element.appendChild(document.createElement('br'));
+        });
+    }
+
+    function appendMessageDOM(role, content) {
+        const box = document.createElement('div');
+        box.className = role === 'user' ? 'user-box' : 'ai-box';
+        if (role === 'user') box.appendChild(document.createTextNode('나: '));
+        appendSafeTextNode(box, content);
+        chatContainer.appendChild(box);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function appendSystemMsg(msgText) {
+        const box = document.createElement('div');
+        box.className = 'system-box';
+        box.textContent = '⚙️ ' + msgText;
+        chatContainer.appendChild(box);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function connectWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+        socket.onopen = () => appendSystemMsg("✅ Python 서버 연결됨");
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === "stream_chunk") {
+                let lastAi = chatContainer.querySelector('.ai-box:last-child');
+                if (!lastAi || lastAi.dataset.done === "true") {
+                    lastAi = document.createElement('div');
+                    lastAi.className = 'ai-box';
+                    chatContainer.appendChild(lastAi);
+                }
+                appendSafeTextNode(lastAi, data.content);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            } else if (data.type === "system") {
+                appendSystemMsg(data.content);
+            } else if (data.type === "done") {
+                const lastAi = chatContainer.querySelector('.ai-box:last-child');
+                if (lastAi) lastAi.dataset.done = "true";
+            }
+        };
+        socket.onclose = () => setTimeout(connectWebSocket, 3000);
+    }
+
+    function setGlobalMaxTokens(val) {
+        const tokens = parseInt(val) || 4096;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "update_setting", maxTokens: tokens }));
+        }
+    }
+
+    function handleEnter(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            const inputEl = document.getElementById('msg');
+            const text = inputEl.value.trim();
+            if (text) {
+                if (!text.startsWith("***")) appendMessageDOM('user', text);
+                inputEl.value = '';
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ type: "user_input", content: text }));
+                }
+            }
+        }
+    }
+
+    window.onload = connectWebSocket;
+</script>
+</body>
+</html>
