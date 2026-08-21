@@ -13,6 +13,7 @@ slots = {
 }
 
 # 1. 명령어 처리
+# 1. 명령어 처리 (오타 수정완료)
 def handle_command(text):
     global slots, current_target, chat_history
     
@@ -40,18 +41,17 @@ def handle_command(text):
                 slots[slot_name]["apiKey"] = t
                 slots[slot_name]["provider"] = "openrouter"
             elif t.startswith("deepinfra-") or (len(t) == 32 and not t.startswith("gsk_")):
-                # DeepInfra 키 인식 (deepinfra- 로 시작하거나 32자리 키)
                 slots[slot_name]["apiKey"] = t
                 slots[slot_name]["provider"] = "deepinfra"
             elif t.isdigit():
                 slots[slot_name]["maxTokens"] = int(t)
-            elif "/" in t: # 모델명 지정 (예: deepseek/deepseek-r1, meta-llama/llama-3.3-70b-instruct)
+            elif "/" in t: # 모델명 지정
                 slots[slot_name]["model"] = t
             else:
                 slots[slot_name]["sysPrompt"] = t
 
         s = slots[slot_name]
-        return f"✅ [{s_name}] 설정 완료! (제공업체: {s['provider']}, 키: {s['apiKey'][:8]}...)"
+        return f"✅ [{slot_name}] 설정 완료! (제공업체: {s['provider']}, 키: {s['apiKey'][:8]}...)" # 👈 여기 s_name을 slot_name으로 고쳤어!
 
     if "청소해" in text or "지워줘" in text:
         chat_history.clear()
