@@ -17,9 +17,10 @@ def handle_command(text):
     global slots, current_target, chat_history
     
     if text.startswith("***"):
-        tokens = text.replace("***", "").strip().split()
+        raw_text = text.replace("***", "").strip()
+        tokens = raw_text.split()
         if not tokens:
-            return "❌ 형식: *** [슬롯명] [설정값들...]"
+            return "❌ 형식: *** [슬롯명] [키/토큰/모델/프롬프트...]"
         
         slot_name = tokens[0]
         if slot_name not in slots:
@@ -28,21 +29,29 @@ def handle_command(text):
         rest = tokens[1:]
         if not rest:
             s = slots[slot_name]
-            return f"ℹ️ [{slot_name}] 현재 설정:\n- 모델: {s['model']}\n- 키: {'등록됨' if s['apiKey'] else '없음'}\n- 토큰: {s['maxTokens']}"
+            return f"ℹ️ [{slot_name}] 현재 설정:\n- 제공업체: {s.get('provider')}\n- 모델: {s['model']}\n- 키: {'등록됨' if s['apiKey'] else '없음'}\n- 토큰: {s['maxTokens']}"
         
         for t in rest:
+            # 키 접두사별 제공업체 자동 판별
             if t.startswith("gsk_"):
                 slots[slot_name]["apiKey"] = t
                 slots[slot_name]["provider"] = "groq"
-            elif t.startswith("sk-or-v1-"):
+            elif t.startswith("sk-or-"):
                 slots[slot_name]["apiKey"] = t
                 slots[slot_name]["provider"] = "openrouter"
+            elif t.startswith("deepinfra-") or (len(t) == 32 and not t.startswith("gsk_")):
+                # DeepInfra 키 인식 (deepinfra- 로 시작하거나 32자리 키)
+                slots[slot_name]["apiKey"] = t
+                slots[slot_name]["provider"] = "deepinfra"
             elif t.isdigit():
                 slots[slot_name]["maxTokens"] = int(t)
+            elif "/" in t: # 모델명 지정 (예: deepseek/deepseek-r1, meta-llama/llama-3.3-70b-instruct)
+                slots[slot_name]["model"] = t
             else:
-                slots[slot_name]["sysPrompt"] = " ".join(rest)
-        
-        return f"✅ [{slot_name}] 슬롯 설정 업데이트 완료!"
+                slots[slot_name]["sysPrompt"] = t
+
+        s = slots[slot_name]
+        return f"✅ [{s_name}] 설정 완료! (제공업체: {s['provider']}, 키: {s['apiKey'][:8]}...)"
 
     if "청소해" in text or "지워줘" in text:
         chat_history.clear()
@@ -74,9 +83,11 @@ async def process_chat(ws, user_msg):
         await ws.send_json({"type": "system", "content": f"⚠️ [{current_target}]의 API 키가 없습니다."})
         return
 
+# Provider별 API 주소 전체 세팅
     provider_urls = {
         "groq": "https://api.groq.com/openai/v1/chat/completions",
         "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+        "deepinfra": "https://api.deepinfra.com/v1/openai/chat/completions",
         "cerebras": "https://api.cerebras.ai/v1/chat/completions",
         "together": "https://api.together.xyz/v1/chat/completions"
     }
